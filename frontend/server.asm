@@ -13,6 +13,8 @@ extern closesocket
 extern ExitProcess
 extern MessageBoxA
 
+extern index_html
+
 section .data
     wsa_version dw 2, 2
     sockaddr:
@@ -20,17 +22,25 @@ section .data
         sin_port dw 0x901F
         sin_addr dd 0
     
-    http_response db "HTTP/1.1 200 OK", 13, 10
-                  db "Content-Type: text/html; charset=utf-8", 13, 10
-                  db "Content-Length: 39", 13, 10
-                  db "Connection: close", 13, 10
-                  db 13, 10
-                  db "<html><body><h1>Frontend</h1></body></html>"
-    resp_len      equ $ - http_response
+    http_header db "HTTP/1.1 200 OK", 13, 10
+                db "Content-Type: text/html; charset=utf-8", 13, 10
+                db "Content-Length: "
+    header_len equ $ - http_header
+    
+    http_footer db 13, 10
+                db "Connection: close", 13, 10
+                db 13, 10
+    footer_len equ $ - http_footer
+    
+    error_title db "Error", 0
+    error_msg db "An error occurred.", 0
 
 section .bss
     wsa_data resb 400
     listen_socket resq 1
+    page_content resq 1
+    page_length resq 1
+    response_buffer resb 4096
     client_socket resq 1
     request_buffer resb 1024
 
@@ -81,9 +91,48 @@ server_loop:
     xor r9, r9
     call recv
 
+    call index_html
+    mov [page_content], rax
+    mov [page_length], rdx
+
+    lea rdi, [response_buffer]
+    
+    lea rsi, [http_header]
+    mov rcx, header_len
+    rep movsb
+    
+    mov rax, [page_length]
+    mov rcx, 10
+    mov rbx, rdi
+.convert_length:
+    xor rdx, rdx
+    div rcx
+    push rdx
+    test rax, rax
+    jnz .convert_length
+    
+    cmp rdi, rbx
+    je .skip_digits
+.write_digits:
+    pop rax
+    add al, '0'
+    stosb
+    cmp rdi, rbx
+    jne .write_digits
+.skip_digits:
+    
+    lea rsi, [http_footer]
+    mov rcx, footer_len
+    rep movsb
+    
+    mov rsi, [page_content]
+    mov rcx, [page_length]
+    rep movsb
+    
     mov rcx, [client_socket]
-    lea rdx, [http_response]
-    mov r8, resp_len
+    lea rdx, [response_buffer]
+    mov r8, rdi
+    sub r8, rdx
     xor r9, r9
     call send
 
@@ -109,7 +158,3 @@ error:
 
     mov rcx, 1
     call ExitProcess
-
-section .data
-    error_title db "Error", 0
-    error_msg db "An error occurred.", 0

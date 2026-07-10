@@ -1,8 +1,5 @@
 @echo off
-echo Stopping server...
+echo Stopping servers...
 taskkill /IM server.exe /F >nul 2>&1
-if errorlevel 1 (
-    echo Server is not running
-) else (
-    echo Server stopped
-)
+taskkill /IM frontend.exe /F >nul 2>&1
+echo Done

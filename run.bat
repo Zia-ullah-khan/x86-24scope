@@ -1,10 +1,12 @@
 @echo off
-echo Starting server on port 8080...
-echo Open http://localhost:8080/ in your browser
+echo Starting backend on port 8080...
+echo Starting frontend on port 8081...
+echo Open http://localhost:8080/ for the backend and http://localhost:8081/ for the frontend
 echo Press Ctrl+C to stop the server
 echo.
 
-.\server.exe
+start "Backend" .\server.exe
+start "Frontend" .\frontend.exe
 
-echo Server stopped
+echo Both servers started
 

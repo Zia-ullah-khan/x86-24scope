@@ -19,7 +19,7 @@ section .data
     wsa_version dw 2, 2
     sockaddr:
         sin_family dw 2
-        sin_port dw 0x901F
+        sin_port dw 0x911F
         sin_addr dd 0
     
     http_header db "HTTP/1.1 200 OK", 13, 10

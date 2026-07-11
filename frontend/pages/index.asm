@@ -71,6 +71,27 @@ section .data
                 db "    color: #bfeeff;", 13, 10
                 db "    font-size: 0.95rem;", 13, 10
                 db "  }", 13, 10
+                db "  .actions {", 13, 10
+                db "    margin-top: 24px;", 13, 10
+                db "  }", 13, 10
+                db "  .button {", 13, 10
+                db "    display: inline-flex;", 13, 10
+                db "    align-items: center;", 13, 10
+                db "    gap: 10px;", 13, 10
+                db "    margin-top: 24px;", 13, 10
+                db "    padding: 12px 16px;", 13, 10
+                db "    border-radius: 999px;", 13, 10
+                db "    border: 1px solid rgba(86, 212, 255, 0.34);", 13, 10
+                db "    background: linear-gradient(135deg, rgba(86, 212, 255, 0.18), rgba(139, 92, 246, 0.14));", 13, 10
+                db "    color: var(--text);", 13, 10
+                db "    text-decoration: none;", 13, 10
+                db "    font-weight: 700;", 13, 10
+                db "    letter-spacing: 0.02em;", 13, 10
+                db "  }", 13, 10
+                db "  .button:hover {", 13, 10
+                db "    border-color: rgba(86, 212, 255, 0.6);", 13, 10
+                db "    box-shadow: 0 0 24px rgba(86, 212, 255, 0.18);", 13, 10
+                db "  }", 13, 10
                 db "</style>", 13, 10
                 db "</head>", 13, 10
                 db "<body>", 13, 10
@@ -80,6 +101,7 @@ section .data
                 db '<h1>It will be a <span class="accent-2">duplicate of 24Spy</span>.</h1>', 13, 10
                 db "<p>Low-level code, direct HTTP responses, and a custom frontend shell built entirely in assembly.</p>", 13, 10
                 db '<div class="tag">Prototype interface in progress</div>', 13, 10
+                db '<div class="actions"><a class="button" href="/radar">Open radar map</a></div>', 13, 10
                 db "</main>", 13, 10
                 db "</body>", 13, 10
                 db "</html>"

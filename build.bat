@@ -15,7 +15,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"C:\Users\khans\Desktop\GoLink.exe" /entry _start frontend.obj index.obj ws2_32.dll kernel32.dll user32.dll /fo frontend.exe
+"C:\Program Files\NASM\nasm.exe" -f win64 frontend\pages\radar.asm -o radar.obj
+if errorlevel 1 (
+    echo Failed to compile frontend\pages\radar.asm
+    exit /b 1
+)
+
+"C:\Users\khans\Desktop\GoLink.exe" /entry _start frontend.obj index.obj radar.obj ws2_32.dll kernel32.dll user32.dll /fo frontend.exe
 if errorlevel 1 (
     echo Failed to link frontend executable
     exit /b 1

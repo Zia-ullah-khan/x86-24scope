@@ -1,6 +1,13 @@
 bits 64
 default rel
 
+%ifndef LINUX
+  %ifndef MACOS
+    %define WINDOWS 1
+  %endif
+%endif
+
+%ifdef WINDOWS
 extern WSAStartup
 extern WSACleanup
 extern socket
@@ -25,12 +32,70 @@ FILE_SHARE_READ equ 1
 OPEN_EXISTING equ 3
 FILE_ATTRIBUTE_NORMAL equ 0x80
 
+%elifdef MACOS
+extern _socket
+extern _bind
+extern _listen
+extern _accept
+extern _recv
+extern _send
+extern _close
+extern _open
+extern _read
+extern _lseek
+extern _exit
+extern _write
+
+extern _index_html
+extern _radar_html
+
+%define socket _socket
+%define bind _bind
+%define listen _listen
+%define accept _accept
+%define recv _recv
+%define send _send
+%define close _close
+%define open _open
+%define read _read
+%define lseek _lseek
+%define exit _exit
+%define write _write
+%define index_html _index_html
+%define radar_html _radar_html
+
+%elifdef LINUX
+extern socket
+extern bind
+extern listen
+extern accept
+extern recv
+extern send
+extern close
+extern open
+extern read
+extern lseek
+extern exit
+extern write
+
+extern index_html
+extern radar_html
+%endif
+
 section .data
+%ifdef WINDOWS
     wsa_version dw 2, 2
+%endif
     sockaddr:
+%ifdef MACOS
+        sin_len db 16
+        sin_family db 2
+%else
         sin_family dw 2
+%endif
         sin_port dw 0x9B1F
         sin_addr dd 0
+        sin_zero times 8 db 0
 
     http_header db "HTTP/1.1 200 OK", 13, 10
                 db "Content-Type: text/html; charset=utf-8", 13, 10
@@ -61,12 +126,18 @@ section .data
     ctype_jpg db "image/jpeg", 0
     ctype_bin db "application/octet-stream", 0
 
+%ifdef WINDOWS
     static_prefix db "frontend\static", 0
+%else
+    static_prefix db "frontend/static", 0
+%endif
     error_title db "Error", 0
     error_msg db "An error occurred.", 0
 
 section .bss
+%ifdef WINDOWS
     wsa_data resb 400
+%endif
     listen_socket resq 1
     page_content resq 1
     page_length resq 1
@@ -83,20 +154,22 @@ section .bss
     file_chunk resb 32768
 
 section .text
+%ifdef WINDOWS
 global _start
-
 _start:
+%else
+global main
+main:
+%endif
     sub rsp, 40
-    mov rcx, [wsa_version]
-    lea rdx, [wsa_data]
-    call WSAStartup
+    call os_init
     test eax, eax
     jnz error
 
     mov rcx, 2
     mov rdx, 1
     xor r8, r8
-    call socket
+    call os_socket
     mov [listen_socket], rax
     cmp rax, -1
     je cleanup_WSA
@@ -104,13 +177,13 @@ _start:
     mov rcx, [listen_socket]
     lea rdx, [sockaddr]
     mov r8, 16
-    call bind
+    call os_bind
     test eax, eax
     js close_listen
 
     mov rcx, [listen_socket]
     mov rdx, 5
-    call listen
+    call os_listen
     test eax, eax
     js close_listen
 
@@ -118,7 +191,7 @@ server_loop:
     mov rcx, [listen_socket]
     xor rdx, rdx
     xor r8, r8
-    call accept
+    call os_accept
     cmp rax, -1
     je server_loop
     mov [client_socket], rax
@@ -127,7 +200,7 @@ server_loop:
     lea rdx, [request_buffer]
     mov r8, 2048
     xor r9, r9
-    call recv
+    call os_recv
 
     lea rdi, [request_buffer]
     call parse_path
@@ -179,7 +252,7 @@ send_html:
     mov r8, rdi
     sub r8, rdx
     xor r9, r9
-    call send
+    call os_send
     jmp after_req
 
 do_404:
@@ -187,11 +260,11 @@ do_404:
     lea rdx, [http_404]
     mov r8, http_404_len
     xor r9, r9
-    call send
+    call os_send
 
 after_req:
     mov rcx, [client_socket]
-    call closesocket
+    call os_close_socket
     jmp server_loop
 
 write_decimal:
@@ -231,9 +304,17 @@ write_decimal:
 
 parse_path:
     mov eax, [rdi]
-    cmp eax, 0x20544547
+    cmp eax, 0x20544547  ; "GET "
+    je .is_get
+    cmp eax, 0x44414548  ; "HEAD"
     jne .fail
+    cmp byte [rdi + 4], ' '
+    jne .fail
+    add rdi, 5
+    jmp .parse_body
+.is_get:
     add rdi, 4
+.parse_body:
     lea rsi, [path_buffer]
     xor ecx, ecx
 .next:
@@ -378,30 +459,25 @@ try_static:
     lodsb
     test al, al
     jz .cp2done
+%ifdef WINDOWS
     cmp al, '/'
     jne .put
     mov al, '\'
 .put:
+%endif
     stosb
     jmp .cp2
 .cp2done:
     mov byte [rdi], 0
 
     lea rcx, [file_path]
-    mov edx, GENERIC_READ
-    mov r8d, FILE_SHARE_READ
-    xor r9, r9
-    mov dword [rsp + 32], OPEN_EXISTING
-    mov dword [rsp + 40], FILE_ATTRIBUTE_NORMAL
-    mov qword [rsp + 48], 0
-    call CreateFileA
+    call os_open_file
     cmp rax, -1
     je .fail
 
     mov [file_handle], rax
     mov rcx, rax
-    xor rdx, rdx
-    call GetFileSize
+    call os_get_file_size
     cmp eax, -1
     je .fail_close
     mov [file_size], eax
@@ -434,15 +510,14 @@ try_static:
     mov r8, rdi
     sub r8, rdx
     xor r9, r9
-    call send
+    call os_send
 
 .read:
     mov rcx, [file_handle]
     lea rdx, [file_chunk]
     mov r8d, 32768
     lea r9, [bytes_read]
-    mov qword [rsp + 32], 0
-    call ReadFile
+    call os_read_file
     test eax, eax
     jz .done
     mov eax, [bytes_read]
@@ -452,12 +527,12 @@ try_static:
     lea rdx, [file_chunk]
     mov r8d, eax
     xor r9, r9
-    call send
+    call os_send
     jmp .read
 
 .done:
     mov rcx, [file_handle]
-    call CloseHandle
+    call os_close_file
     add rsp, 64
     pop rdi
     pop rsi
@@ -466,13 +541,13 @@ try_static:
 
 .fail_close:
     mov rcx, [file_handle]
-    call CloseHandle
+    call os_close_file
 .fail:
     mov rcx, [client_socket]
     lea rdx, [http_404]
     mov r8, http_404_len
     xor r9, r9
-    call send
+    call os_send
     add rsp, 64
     pop rdi
     pop rsi
@@ -519,16 +594,117 @@ choose_ctype:
 
 close_listen:
     mov rcx, [listen_socket]
-    call closesocket
+    call os_close_socket
 
 cleanup_WSA:
-    call WSACleanup
+    call os_cleanup
 
 exit_process:
     xor ecx, ecx
-    call ExitProcess
+    call os_exit
 
 error:
+    call os_error
+    mov rcx, 1
+    call os_exit
+
+%ifdef WINDOWS
+
+os_init:
+    sub rsp, 40
+    mov rcx, [wsa_version]
+    lea rdx, [wsa_data]
+    call WSAStartup
+    add rsp, 40
+    ret
+
+os_cleanup:
+    sub rsp, 40
+    call WSACleanup
+    add rsp, 40
+    ret
+
+os_socket:
+    sub rsp, 40
+    call socket
+    add rsp, 40
+    ret
+
+os_bind:
+    sub rsp, 40
+    call bind
+    add rsp, 40
+    ret
+
+os_listen:
+    sub rsp, 40
+    call listen
+    add rsp, 40
+    ret
+
+os_accept:
+    sub rsp, 40
+    call accept
+    add rsp, 40
+    ret
+
+os_recv:
+    sub rsp, 40
+    call recv
+    add rsp, 40
+    ret
+
+os_send:
+    sub rsp, 40
+    call send
+    add rsp, 40
+    ret
+
+os_close_socket:
+    sub rsp, 40
+    call closesocket
+    add rsp, 40
+    ret
+
+os_open_file:
+    sub rsp, 64
+    mov rdx, GENERIC_READ
+    mov r8d, FILE_SHARE_READ
+    xor r9, r9
+    mov dword [rsp + 32], OPEN_EXISTING
+    mov dword [rsp + 40], FILE_ATTRIBUTE_NORMAL
+    mov qword [rsp + 48], 0
+    call CreateFileA
+    add rsp, 64
+    ret
+
+os_get_file_size:
+    sub rsp, 40
+    xor rdx, rdx
+    call GetFileSize
+    add rsp, 40
+    ret
+
+os_read_file:
+    sub rsp, 40
+    mov qword [rsp + 32], 0
+    call ReadFile
+    add rsp, 40
+    ret
+
+os_close_file:
+    sub rsp, 40
+    call CloseHandle
+    add rsp, 40
+    ret
+
+os_exit:
+    sub rsp, 40
+    call ExitProcess
+    add rsp, 40
+    ret
+
+os_error:
     sub rsp, 40
     xor rcx, rcx
     lea rdx, [error_msg]
@@ -536,5 +712,130 @@ error:
     xor r9, r9
     call MessageBoxA
     add rsp, 40
-    mov rcx, 1
-    call ExitProcess
+    ret
+
+%else ; LINUX or MACOS
+
+os_init:
+    xor eax, eax
+    ret
+
+os_cleanup:
+    ret
+
+os_socket:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    jmp socket
+
+os_bind:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    jmp bind
+
+os_listen:
+    mov rdi, rcx
+    mov rsi, rdx
+    jmp listen
+
+os_accept:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    jmp accept
+
+os_recv:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    mov rcx, r9
+    jmp recv
+
+os_send:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    mov rcx, r9
+    jmp send
+
+os_close_socket:
+    mov rdi, rcx
+    jmp close
+
+os_open_file:
+    mov rdi, rcx
+    xor esi, esi
+    jmp open
+
+os_get_file_size:
+    push rbx
+    push r12
+    sub rsp, 8
+    
+    mov rbx, rcx ; fd
+    
+    mov rdi, rbx
+    xor rsi, rsi
+    mov rdx, 2   ; SEEK_END = 2
+    call lseek
+    mov r12, rax ; save size in r12
+    
+    mov rdi, rbx
+    xor rsi, rsi
+    xor rdx, rdx ; SEEK_SET = 0
+    call lseek
+    
+    mov rax, r12 ; restore size to return in rax
+    
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+os_read_file:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    
+    mov rbx, r9
+    
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    sub rsp, 8
+    call read
+    add rsp, 8
+    
+    test rax, rax
+    js .error
+    
+    mov [rbx], eax
+    mov eax, 1
+    jmp .done
+.error:
+    xor eax, eax
+.done:
+    pop rbx
+    pop rbp
+    ret
+
+os_close_file:
+    mov rdi, rcx
+    jmp close
+
+os_exit:
+    mov rdi, rcx
+    jmp exit
+
+os_error:
+    mov rdi, 2
+    lea rsi, [error_msg]
+    mov rdx, 18
+    sub rsp, 8
+    call write
+    add rsp, 8
+    ret
+
+%endif

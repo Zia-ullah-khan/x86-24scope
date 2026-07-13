@@ -1,6 +1,13 @@
 bits 64
 default rel
 
+%ifndef LINUX
+  %ifndef MACOS
+    %define WINDOWS 1
+  %endif
+%endif
+
+%ifdef WINDOWS
 extern WSAStartup
 extern WSACleanup
 extern socket
@@ -16,12 +23,72 @@ extern InternetOpenA
 extern InternetOpenUrlA
 extern InternetCloseHandle
 
+%elifdef MACOS
+extern _socket
+extern _bind
+extern _listen
+extern _accept
+extern _recv
+extern _send
+extern _close
+extern _exit
+extern _write
+extern _curl_easy_init
+extern _curl_easy_setopt
+extern _curl_easy_perform
+extern _curl_easy_cleanup
+extern _perror
+
+%define socket _socket
+%define bind _bind
+%define listen _listen
+%define accept _accept
+%define recv _recv
+%define send _send
+%define close _close
+%define exit _exit
+%define write _write
+%define curl_easy_init _curl_easy_init
+%define curl_easy_setopt _curl_easy_setopt
+%define curl_easy_perform _curl_easy_perform
+%define curl_easy_cleanup _curl_easy_cleanup
+%define perror _perror
+
+%elifdef LINUX
+extern socket
+extern bind
+extern listen
+extern accept
+extern recv
+extern send
+extern close
+extern exit
+extern write
+extern curl_easy_init
+extern curl_easy_setopt
+extern curl_easy_perform
+extern curl_easy_cleanup
+extern perror
+%endif
+
 section .data
+%ifdef WINDOWS
     wsa_version dw 2, 2
+%endif
     sockaddr:
+%ifdef MACOS
+        sin_len db 16
+        sin_family db 2
+%else
         sin_family dw 2
+%endif
         sin_port dw 0x901F
         sin_addr dd 0
+        sin_zero times 8 db 0
+
+    msg_socket_err db "socket failed", 0
+    msg_bind_err db "bind failed", 0
+    msg_listen_err db "listen failed", 0
 
     user_agent db "x86-24scope/1.0", 0
     status_url db "https://24data.ptfs.app/controllers", 0
@@ -94,53 +161,75 @@ section .data
     error_msg db "An error occurred.", 0
 
 section .bss
+%ifdef WINDOWS
     wsa_data resb 400
+%endif
     listen_socket resq 1
     page_content resq 1
     page_length resq 1
     response_buffer resb 4096
     client_socket resq 1
     request_buffer resb 1024
+%ifdef WINDOWS
     internet_session resq 1
     internet_handle resq 1
+%endif
 
 section .text
+%ifdef WINDOWS
 global _start
-
 _start:
+%else
+global main
+main:
+%endif
     sub rsp, 40
-    mov rcx, [wsa_version]
-    lea rdx, [wsa_data]
-    call WSAStartup
+    call os_init
     test eax, eax
     jnz error
 
     mov rcx, 2
     mov rdx, 1
     xor r8, r8
-    call socket
+    call os_socket
     mov [listen_socket], rax
     cmp rax, -1
-    je cleanup_WSA
+    je socket_failed_err
 
     mov rcx, [listen_socket]
     lea rdx, [sockaddr]
     mov r8, 16
-    call bind
+    call os_bind
     test eax, eax
-    js close_listen
+    js bind_failed_err
 
     mov rcx, [listen_socket]
     mov rdx, 5
-    call listen
+    call os_listen
     test eax, eax
-    js close_listen
+    js listen_failed_err
+    jmp server_loop
+
+socket_failed_err:
+    lea rcx, [msg_socket_err]
+    call os_perror
+    jmp cleanup_WSA
+
+bind_failed_err:
+    lea rcx, [msg_bind_err]
+    call os_perror
+    jmp close_listen
+
+listen_failed_err:
+    lea rcx, [msg_listen_err]
+    call os_perror
+    jmp close_listen
 
 server_loop:
     mov rcx, [listen_socket]
     xor rdx, rdx
     xor r8, r8
-    call accept
+    call os_accept
     cmp rax, -1
     je server_loop
     mov [client_socket], rax
@@ -149,7 +238,7 @@ server_loop:
     lea rdx, [request_buffer]
     mov r8, 1024
     xor r9, r9
-    call recv
+    call os_recv
 
     call check_24data_online
     test eax, eax
@@ -173,7 +262,7 @@ build_response:
 
     mov rax, [page_length]
     mov rcx, 10
-    mov rbx, rdi
+    mov rbx, rsp
 .convert_length:
     xor rdx, rdx
     div rcx
@@ -181,15 +270,12 @@ build_response:
     test rax, rax
     jnz .convert_length
 
-    cmp rdi, rbx
-    je .skip_digits
 .write_digits:
     pop rax
     add al, '0'
     stosb
-    cmp rdi, rbx
+    cmp rsp, rbx
     jne .write_digits
-.skip_digits:
 
     lea rsi, [http_footer]
     mov rcx, footer_len
@@ -204,13 +290,14 @@ build_response:
     mov r8, rdi
     sub r8, rdx
     xor r9, r9
-    call send
+    call os_send
 
     mov rcx, [client_socket]
-    call closesocket
+    call os_close_socket
     jmp server_loop
 
 check_24data_online:
+%ifdef WINDOWS
     sub rsp, 56
 
     lea rcx, [user_agent]
@@ -248,15 +335,139 @@ check_24data_online:
     xor eax, eax
     add rsp, 56
     ret
+%else ; LINUX or MACOS
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+
+    call curl_easy_init
+    test rax, rax
+    jz .offline
+    mov rbx, rax
+
+    mov rdi, rbx
+    mov rsi, 10002
+    lea rdx, [status_url]
+    xor eax, eax
+    call curl_easy_setopt
+
+    mov rdi, rbx
+    mov rsi, 10018
+    lea rdx, [user_agent]
+    xor eax, eax
+    call curl_easy_setopt
+
+    mov rdi, rbx
+    mov rsi, 44
+    mov rdx, 1
+    xor eax, eax
+    call curl_easy_setopt
+
+    mov rdi, rbx
+    mov rsi, 13
+    mov rdx, 5
+    xor eax, eax
+    call curl_easy_setopt
+
+    mov rdi, rbx
+    call curl_easy_perform
+    mov r12, rax
+
+    mov rdi, rbx
+    call curl_easy_cleanup
+
+    test r12, r12
+    jnz .offline
+
+    mov eax, 1
+    jmp .done
+.offline:
+    xor eax, eax
+.done:
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+%endif
 
 close_listen:
     mov rcx, [listen_socket]
-    call closesocket
+    call os_close_socket
 
 cleanup_WSA:
-    call WSACleanup
+    call os_cleanup
 
 error:
+    call os_error
+    mov rcx, 1
+    call os_exit
+
+%ifdef WINDOWS
+
+os_init:
+    sub rsp, 40
+    mov rcx, [wsa_version]
+    lea rdx, [wsa_data]
+    call WSAStartup
+    add rsp, 40
+    ret
+
+os_cleanup:
+    sub rsp, 40
+    call WSACleanup
+    add rsp, 40
+    ret
+
+os_socket:
+    sub rsp, 40
+    call socket
+    add rsp, 40
+    ret
+
+os_bind:
+    sub rsp, 40
+    call bind
+    add rsp, 40
+    ret
+
+os_listen:
+    sub rsp, 40
+    call listen
+    add rsp, 40
+    ret
+
+os_accept:
+    sub rsp, 40
+    call accept
+    add rsp, 40
+    ret
+
+os_recv:
+    sub rsp, 40
+    call recv
+    add rsp, 40
+    ret
+
+os_send:
+    sub rsp, 40
+    call send
+    add rsp, 40
+    ret
+
+os_close_socket:
+    sub rsp, 40
+    call closesocket
+    add rsp, 40
+    ret
+
+os_exit:
+    sub rsp, 40
+    call ExitProcess
+    add rsp, 40
+    ret
+
+os_error:
     sub rsp, 40
     xor rcx, rcx
     lea rdx, [error_msg]
@@ -264,6 +475,79 @@ error:
     xor r9, r9
     call MessageBoxA
     add rsp, 40
+    ret
 
-    mov rcx, 1
-    call ExitProcess
+os_perror:
+    ret
+
+%else ; LINUX or MACOS
+
+os_init:
+    xor eax, eax
+    ret
+
+os_cleanup:
+    ret
+
+os_socket:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    jmp socket
+
+os_bind:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    jmp bind
+
+os_listen:
+    mov rdi, rcx
+    mov rsi, rdx
+    jmp listen
+
+os_accept:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    jmp accept
+
+os_recv:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    mov rcx, r9
+    jmp recv
+
+os_send:
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rdx, r8
+    mov rcx, r9
+    jmp send
+
+os_close_socket:
+    mov rdi, rcx
+    jmp close
+
+os_exit:
+    mov rdi, rcx
+    jmp exit
+
+os_error:
+    mov rdi, 2
+    lea rsi, [error_msg]
+    mov rdx, 18
+    sub rsp, 8
+    call write
+    add rsp, 8
+    ret
+
+os_perror:
+    mov rdi, rcx
+    sub rsp, 8
+    call perror
+    add rsp, 8
+    ret
+
+%endif

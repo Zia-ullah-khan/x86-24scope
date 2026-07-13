@@ -1,6 +1,10 @@
 bits 64
 default rel
 
+%ifdef MACOS
+  %define radar_html _radar_html
+%endif
+
 section .data
     radar_page db '<!DOCTYPE html>', 13, 10
                db '<html>', 13, 10

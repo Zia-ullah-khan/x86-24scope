@@ -1,3 +1,7 @@
+%ifdef MACOS
+  %define index_html _index_html
+%endif
+
 section .data
     index_page db "<!DOCTYPE html>", 13, 10
                 db "<html>", 13, 10

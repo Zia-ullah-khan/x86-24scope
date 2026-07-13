@@ -1,3 +1,6 @@
+bits 64
+default rel
+
 %ifdef MACOS
   %define index_html _index_html
 %endif

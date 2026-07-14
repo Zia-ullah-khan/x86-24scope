@@ -9,6 +9,7 @@ section .text
 global apic_init
 global apic_send_eoi
 global ioapic_map_irq
+global ioapic_base_ptr
 
 extern con_puts
 extern serial_puts

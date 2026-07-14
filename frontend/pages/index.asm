@@ -121,4 +121,3 @@ index_html:
     lea rax, [index_page]
     mov rdx, index_len
     ret
-

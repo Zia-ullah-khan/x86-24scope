@@ -7,3 +7,4 @@ frontend_server
 *.iso
 *.img
 build/
+iso_root/EFI/BOOT/BOOTX64.EFI

@@ -53,6 +53,7 @@ extern _perror
 %define curl_easy_perform _curl_easy_perform
 %define curl_easy_cleanup _curl_easy_cleanup
 %define perror _perror
+%define main _main
 
 %elifdef LINUX
 extern socket

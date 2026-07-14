@@ -37,6 +37,7 @@ extern iwl_wifi_scan
 extern iwl_wifi_connect
 extern iwl_assoc_flag
 extern pci_read_config
+extern vmm_map_mmio
 
 ; CSR
 CSR_HW_IF_CONFIG_REG            equ 0x000
@@ -111,6 +112,32 @@ iwl_driver_init:
     test rbx, rbx
     jz .fail
 
+    ; Print BAR first so a map fault is diagnosable
+    lea rcx, [msg_iwl_bar]
+    call con_puts
+    lea rcx, [msg_iwl_bar]
+    call serial_puts
+    mov rcx, rbx
+    call con_put_hex
+    call con_newline
+    mov rcx, rbx
+    call serial_put_hex
+    lea rcx, [iwl_msg_crlf]
+    call serial_puts
+
+    ; Map PCI BAR into page tables (often >4GB on modern laptops)
+    mov rcx, rbx
+    mov rdx, 0x200000               ; at least one 2MB page
+    call vmm_map_mmio
+    test rax, rax
+    jnz .mapped
+    lea rcx, [msg_iwl_mapfail]
+    call con_puts
+    lea rcx, [msg_iwl_mapfail]
+    call serial_puts
+    jmp .fail
+
+.mapped:
     mov eax, [rbx + CSR_HW_REV]
     mov [iwl_hw_rev], eax
     lea rcx, [msg_iwl_rev]
@@ -478,9 +505,12 @@ iwl_ops_table:
     dq iwl_is_associated
 
 msg_iwl_init db "Net: Intel iwlwifi bring-up...", 13, 10, 0
+msg_iwl_bar  db "Net: iwlwifi MMIO BAR=0x", 0
+msg_iwl_mapfail db "Net: iwlwifi MMIO map failed.", 13, 10, 0
 msg_iwl_rev  db "Net: iwlwifi HW_REV=0x", 0
 msg_iwl_ok   db "Net: iwlwifi ready (ALIVE). Use wifi_config for SSID.", 13, 10, 0
 msg_iwl_fail db "Net: iwlwifi bring-up failed.", 13, 10, 0
+iwl_msg_crlf db 13, 10, 0
 msg_kick     db "WiFi: Context info programmed; waiting for ALIVE...", 13, 10, 0
 
 section .bss

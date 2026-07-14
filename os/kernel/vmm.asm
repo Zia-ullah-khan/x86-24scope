@@ -8,6 +8,7 @@ section .text
 
 global vmm_init
 global vmm_map_page
+global vmm_map_mmio
 extern pmm_alloc_page
 
 ; BootInfo structure offset:
@@ -143,88 +144,170 @@ vmm_init:
     pop rbp
     ret
 
-; Map a 2MB page (Internal helper)
-; RCX = Virtual Address
-; RDX = Physical Address
+; Map a 2MB page (identity-style helper)
+; RCX = Virtual Address, RDX = Physical Address
 vmm_map_large_page:
     push rbp
     mov rbp, rsp
     push rbx
     push rdi
-    push rsi
+    push r12
+    push r13
+    push r14
+    push r15
+    mov eax, 0x83                   ; Present + RW + PS (WB)
+    jmp vmm_map_large_page_common
 
-    mov r8, rcx
-    shr r8, 39
-    and r8, 0x1FF                   ; PML4 Index
+; MMIO variant: Present + RW + PS + PCD
+vmm_map_large_page_uc:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    mov eax, 0x93
 
-    mov r9, rcx
-    shr r9, 30
-    and r9, 0x1FF                   ; PDPT Index
+vmm_map_large_page_common:
+    mov r14, rcx                    ; VA
+    mov r15, rdx                    ; PA
+    mov ebx, eax                    ; flags (RBX preserved across calls)
 
-    mov r10, rcx
-    shr r10, 21
-    and r10, 0x1FF                  ; PD Index
+    mov r12, r14
+    shr r12, 39
+    and r12d, 0x1FF                 ; PML4 index
+
+    mov r13, r14
+    shr r13, 30
+    and r13d, 0x1FF                 ; PDPT index
+
+    mov rax, r14
+    shr rax, 21
+    and eax, 0x1FF
+    push rax                        ; PD index
+    push rbx                        ; flags
 
     mov rdi, [kernel_pml4_ptr]
     test rdi, rdi
-    jz .fail
-    mov rax, [rdi + r8 * 8]
+    jz vmm_mlp_fail
+
+    mov rax, [rdi + r12 * 8]
     test rax, 0x01
-    jnz .pml4_present
+    jnz vmm_mlp_pml4_ok
 
     call pmm_alloc_page
     test rax, rax
-    jz .fail
+    jz vmm_mlp_fail
     push rdi
     mov rdi, rax
-    push rcx
     mov rcx, 512
-    xor r11, r11
+    push rax
+    xor eax, eax
     rep stosq
-    pop rcx
+    pop rax
     pop rdi
-    mov r11, rax
-    or r11, 0x03
-    mov [rdi + r8 * 8], r11
-    mov rax, r11
+    mov rcx, rax
+    or rcx, 0x03
+    mov [rdi + r12 * 8], rcx
+    mov rax, rcx
 
-.pml4_present:
+vmm_mlp_pml4_ok:
     and rax, ~0xFFF
     mov rdi, rax
 
-    mov rax, [rdi + r9 * 8]
+    mov rax, [rdi + r13 * 8]
     test rax, 0x01
-    jnz .pdpt_present
+    jnz vmm_mlp_pdpt_ok
 
     call pmm_alloc_page
     test rax, rax
-    jz .fail
+    jz vmm_mlp_fail
     push rdi
     mov rdi, rax
-    push rcx
     mov rcx, 512
-    xor r11, r11
+    push rax
+    xor eax, eax
     rep stosq
-    pop rcx
+    pop rax
     pop rdi
-    mov r11, rax
-    or r11, 0x03
-    mov [rdi + r9 * 8], r11
-    mov rax, r11
+    mov rcx, rax
+    or rcx, 0x03
+    mov [rdi + r13 * 8], rcx
+    mov rax, rcx
 
-.pdpt_present:
+vmm_mlp_pdpt_ok:
     and rax, ~0xFFF
     mov rdi, rax
 
-    mov rax, rdx
-    or rax, 0x83
-    mov [rdi + r10 * 8], rax
+    pop rbx                         ; flags
+    pop rcx                         ; PD index
+    mov rax, r15
+    and rax, ~0x1FFFFF
+    or rax, rbx
+    mov [rdi + rcx * 8], rax
 
-    invlpg [rcx]
+    invlpg [r14]
+    mov eax, 1
+    jmp vmm_mlp_out
 
-.fail:
-    pop rsi
+vmm_mlp_fail:
+    add rsp, 16
+    xor eax, eax
+vmm_mlp_out:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop rdi
+    pop rbx
+    pop rbp
+    ret
+
+; Identity-map an MMIO range with 2MB uncacheable pages.
+; RCX = physical/virtual base, RDX = size in bytes (at least 1)
+; RAX = 1 on success
+vmm_map_mmio:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+
+    xor eax, eax
+    test rcx, rcx
+    jz .done
+    test rdx, rdx
+    jz .done
+
+    mov rbx, rcx
+    mov r13, rcx
+    add r13, rdx
+    dec r13
+    and rbx, ~0x1FFFFF
+    add r13, 0x1FFFFF
+    and r13, ~0x1FFFFF
+
+.map_loop:
+    cmp rbx, r13
+    jae .flush
+    mov rcx, rbx
+    mov rdx, rbx
+    call vmm_map_large_page_uc
+    test rax, rax
+    jz .done
+    add rbx, 0x200000
+    jmp .map_loop
+
+.flush:
+    mov rax, cr3
+    mov cr3, rax
+    mov eax, 1
+
+.done:
+    pop r13
+    pop r12
     pop rbx
     pop rbp
     ret

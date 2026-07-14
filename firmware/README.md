@@ -18,6 +18,9 @@ your PCI ID, for example:
 
 Rename or copy it to `IWLWIFI.UC` in this folder.
 
+The file must be a Linux **TLV** `.ucode` (starts with `00 00 00 00` + `IWL\\n`). The OS skips the
+88-byte TLV header and loads `SEC_RT` / related sections.
+
 ## Credentials
 
 On boot the OS prompts for **SSID** and **Password** (keyboard or serial).

@@ -22,24 +22,27 @@ extern con_newline
 extern serial_put_hex
 extern pmm_alloc_page
 
-; Linux iwl-fw-file.h TLV types (subset)
+; Linux iwl-fw-file.h TLV types (fw/file.h)
+IWL_TLV_UCODE_MAGIC             equ 0x0a4c5749   ; "IWL\n"
+IWL_TLV_HDR_SIZE                equ 88           ; sizeof(iwl_tlv_ucode_header)
+
 IWL_UCODE_TLV_INST              equ 1
 IWL_UCODE_TLV_DATA              equ 2
 IWL_UCODE_TLV_INIT              equ 3
 IWL_UCODE_TLV_INIT_DATA         equ 4
 IWL_UCODE_TLV_BOOT              equ 5
 IWL_UCODE_TLV_PROBE_MAX_LEN     equ 6
-IWL_UCODE_TLV_PAGING            equ 11
-IWL_UCODE_TLV_SEC_RT            equ 14
-IWL_UCODE_TLV_SEC_INIT          equ 15
-IWL_UCODE_TLV_SEC_WOWLAN        equ 16
-IWL_UCODE_TLV_FW_VERSION        equ 34
-IWL_UCODE_TLV_FW_DBG_DEST       equ 42
-IWL_UCODE_TLV_SECURE_SEC_RT     equ 0x100
-IWL_UCODE_TLV_SECURE_SEC_INIT   equ 0x101
-IWL_UCODE_TLV_MEM_DESC          equ 0x300
+IWL_UCODE_TLV_SEC_RT            equ 19
+IWL_UCODE_TLV_SEC_INIT          equ 20
+IWL_UCODE_TLV_SEC_WOWLAN        equ 21
+IWL_UCODE_TLV_SECURE_SEC_RT     equ 24
+IWL_UCODE_TLV_SECURE_SEC_INIT   equ 25
+IWL_UCODE_TLV_SECURE_SEC_WOWLAN equ 26
+IWL_UCODE_TLV_PAGING            equ 32
+IWL_UCODE_TLV_SEC_RT_USNIFFER   equ 34
+IWL_UCODE_TLV_IML               equ 52
 
-FW_MAX_SECS                     equ 32
+FW_MAX_SECS                     equ 128
 FW_MAX_SIZE                     equ (2 * 1024 * 1024)
 
 ; Separator markers inside sec stream (after parse, stored as type)
@@ -168,8 +171,20 @@ iwl_parse_tlv:
     test r12, r12
     jz .bad
 
-    ; Skip optional legacy header if first type looks invalid and size huge
-    ; Modern files are pure TLV. If dword0 > 0x400 and dword1 looks like len, OK.
+    ; Modern files: iwl_tlv_ucode_header (zero + magic + human + ver + ...)
+    cmp r12, IWL_TLV_HDR_SIZE
+    jb .try_legacy
+    cmp dword [rsi], 0
+    jne .try_legacy
+    cmp dword [rsi + 4], IWL_TLV_UCODE_MAGIC
+    jne .try_legacy
+    add rsi, IWL_TLV_HDR_SIZE
+    sub r12, IWL_TLV_HDR_SIZE
+    jmp .tlv_loop
+
+.try_legacy:
+    ; v1/v2 header not supported for section extract yet; require TLV magic form
+    jmp .bad
 
 .tlv_loop:
     cmp r12, 8
@@ -187,7 +202,7 @@ iwl_parse_tlv:
     cmp r12, rcx
     jb .bad
 
-    ; Interesting section types ??? store pointer into fw_blob
+    ; Firmware image sections we keep for DMA load
     cmp eax, IWL_UCODE_TLV_INST
     je .store
     cmp eax, IWL_UCODE_TLV_DATA
@@ -200,16 +215,22 @@ iwl_parse_tlv:
     je .store
     cmp eax, IWL_UCODE_TLV_SEC_INIT
     je .store
+    cmp eax, IWL_UCODE_TLV_SEC_WOWLAN
+    je .store
     cmp eax, IWL_UCODE_TLV_SECURE_SEC_RT
-    je .store_sec
+    je .store
     cmp eax, IWL_UCODE_TLV_SECURE_SEC_INIT
-    je .store_sec
+    je .store
+    cmp eax, IWL_UCODE_TLV_SECURE_SEC_WOWLAN
+    je .store
     cmp eax, IWL_UCODE_TLV_PAGING
+    je .store
+    cmp eax, IWL_UCODE_TLV_SEC_RT_USNIFFER
+    je .store
+    cmp eax, IWL_UCODE_TLV_IML
     je .store
     jmp .next
 
-.store_sec:
-    ; Secure sections: first 4 bytes may be dest; keep whole TLV data
 .store:
     mov ebx, [fw_sec_count]
     cmp ebx, FW_MAX_SECS

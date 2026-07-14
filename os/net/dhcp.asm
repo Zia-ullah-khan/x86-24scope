@@ -17,11 +17,14 @@ extern udp_send
 extern wifi_get_mac
 extern wifi_recv_packet
 extern wifi_is_loopback
+extern e1000_is_qemu
+extern e1000_dump_stats
 extern wifi_needs_association
 extern wifi_is_associated
 extern net_handle_packet
 extern con_puts
 extern con_put_dec
+extern con_put_hex
 extern con_newline
 extern serial_puts
 extern serial_put_hex
@@ -55,6 +58,7 @@ dhcp_init:
     push rbp
     mov rbp, rsp
     push rbx
+    push r12
 
     mov byte [dhcp_state], STATE_INIT
     mov dword [our_ip], 0
@@ -86,11 +90,11 @@ dhcp_init:
 
 .start_discover:
     call dhcp_send_discover
-
-    ; We block for up to 3 seconds for DHCP to bind, or fallback to static IP
     call get_ticks
     mov rbx, rax
-    add rbx, 3000                   ; 3 second timeout
+    add rbx, 10000                  ; 10 second timeout
+    mov r12, rax
+    add r12, 2000                   ; retransmit every 2s
 
 .poll_loop:
     cmp byte [dhcp_state], STATE_BOUND
@@ -100,11 +104,36 @@ dhcp_init:
     cmp rax, rbx
     jae .fallback
 
+    ; Retransmit DISCOVER while still discovering
+    cmp byte [dhcp_state], STATE_DISCOVERING
+    jne .pump_rx
+    cmp rax, r12
+    jb .pump_rx
+    push rax
+    lea rcx, [msg_dhcp_retry]
+    call con_puts
+    lea rcx, [msg_dhcp_retry]
+    call serial_puts
+    call dhcp_send_discover
+    pop rax
+    add rax, 2000
+    mov r12, rax
+
+.pump_rx:
     ; Pump RX so OFFER/ACK can arrive under polling drivers (e1000/QEMU)
     lea rcx, [dhcp_rx_buf]
     call wifi_recv_packet
     test rax, rax
     jz .no_rx
+    push rax
+    lea rcx, [msg_dhcp_rx]
+    call con_puts
+    pop rax
+    push rax
+    mov rcx, rax
+    call con_put_dec
+    call con_newline
+    pop rax
     lea rcx, [dhcp_rx_buf]
     mov rdx, rax
     call net_handle_packet
@@ -126,7 +155,10 @@ dhcp_init:
     jmp .done
 
 .fallback:
-    ; QEMU user-networking default guest address (hostfwd targets this)
+    ; Only invent 10.0.2.15 for QEMU's 82540EM (device 0x100E)
+    call e1000_is_qemu
+    test rax, rax
+    jz .no_lease
     mov dword [our_ip], 0x0F02000A   ; 10.0.2.15
     mov dword [gateway_ip], 0x0202000A ; 10.0.2.2
     mov dword [subnet_mask], 0x00FFFFFF ; 255.255.255.0
@@ -136,10 +168,23 @@ dhcp_init:
     call con_puts
     lea rcx, [msg_dhcp_timeout]
     call serial_puts
-
     call dhcp_print_config
+    jmp .done
+
+.no_lease:
+    mov dword [our_ip], 0
+    mov dword [gateway_ip], 0
+    mov dword [subnet_mask], 0
+    mov byte [dhcp_state], STATE_INIT
+    lea rcx, [msg_dhcp_nolease]
+    call con_puts
+    lea rcx, [msg_dhcp_nolease]
+    call serial_puts
+    call e1000_dump_stats
+    jmp .done
 
 .done:
+    pop r12
     pop rbx
     pop rbp
     ret
@@ -534,6 +579,9 @@ dhcp_state db STATE_INIT
 msg_dhcp_start db "DHCP: Requesting IP address (discovering)...", 13, 10, 0
 msg_dhcp_bound db "DHCP: Lease bound successfully!", 13, 10, 0
 msg_dhcp_timeout db "DHCP: Request timeout. Using fallback static IP.", 13, 10, 0
+msg_dhcp_nolease db "DHCP: No lease (real NIC needs working link/WiFi ALIVE).", 13, 10, 0
+msg_dhcp_retry db "DHCP: Retransmitting DISCOVER...", 13, 10, 0
+msg_dhcp_rx db "DHCP: RX frame bytes=", 0
 msg_dhcp_loopback db "DHCP: Loopback only — bound 127.0.0.1 (no external NIC).", 13, 10, 0
 msg_dhcp_no_assoc db "DHCP: WiFi not associated; using fallback IP.", 13, 10, 0
 msg_ip db "  IP Address:  ", 0

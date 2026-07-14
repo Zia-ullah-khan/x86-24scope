@@ -11,6 +11,8 @@ global e1000_driver_init
 global e1000_driver_send
 global e1000_driver_recv
 global e1000_driver_get_mac
+global e1000_is_qemu
+global e1000_dump_stats
 
 extern con_puts
 extern serial_puts
@@ -19,35 +21,143 @@ extern con_newline
 extern serial_put_hex
 extern sleep_ms
 extern pmm_alloc_page
+extern vmm_map_mmio
+extern pci_read_config
+extern pci_write_config
 
 ; MMIO register offsets
 E1000_CTRL     equ 0x0000
 E1000_STATUS   equ 0x0008
 E1000_EECD     equ 0x0010
 E1000_EERD     equ 0x0014
+E1000_CTRL_EXT equ 0x0018
+E1000_MDIC     equ 0x0020
+E1000_FEXTNVM3 equ 0x003C
 E1000_ICR      equ 0x00C0
 E1000_IMS      equ 0x00D0
 E1000_IMC      equ 0x00D8
 E1000_RCTL     equ 0x0100
 E1000_TCTL     equ 0x0400
 E1000_TIPG     equ 0x0410
+E1000_KABGTXD  equ 0x3004
 E1000_RDBAL    equ 0x2800
 E1000_RDBAH    equ 0x2804
 E1000_RDLEN    equ 0x2808
 E1000_RDH      equ 0x2810
 E1000_RDT      equ 0x2818
+E1000_RXDCTL   equ 0x2828
 E1000_TDBAL    equ 0x3800
 E1000_TDBAH    equ 0x3804
 E1000_TDLEN    equ 0x3808
 E1000_TDH      equ 0x3810
 E1000_TDT      equ 0x3818
+E1000_TXDCTL   equ 0x3828
+E1000_TARC0    equ 0x3840
+E1000_TXDCTL1  equ 0x3928
+E1000_TARC1    equ 0x3940
+E1000_GPRC     equ 0x4074
+E1000_GPTC     equ 0x4080
+E1000_TPT      equ 0x40D4
+E1000_RXCSUM   equ 0x5000
+E1000_RFCTL    equ 0x5008
 E1000_MTA      equ 0x5200
 E1000_RAL0     equ 0x5400
 E1000_RAH0     equ 0x5404
+E1000_WUC      equ 0x5800
+E1000_WUFC     equ 0x5808
+E1000_MANC     equ 0x5820
+E1000_FEXTNVM7 equ 0x00E4
+E1000_FEXTNVM9 equ 0x5BB4
+E1000_FEXTNVM11 equ 0x5BBC
+E1000_EXTCNF_CTRL equ 0x0F00
+E1000_PHY_CTRL equ 0x0F10
+E1000_PBECCSTS equ 0x100C
+E1000_IOSFPC   equ 0x0F28
+E1000_SWSM     equ 0x5B50
+E1000_FWSM     equ 0x5B54
 
 ; CTRL bits
+CTRL_ASDE      equ 0x20
 CTRL_SLU       equ 0x40
+CTRL_GIO_MASTER_DISABLE equ 0x4
+CTRL_LANPHYPC_OVERRIDE equ 0x10000
+CTRL_LANPHYPC_VALUE    equ 0x20000
 CTRL_RST       equ 0x04000000
+CTRL_PHY_RST   equ 0x80000000
+CTRL_MEHE      equ 0x80000
+
+; CTRL_EXT
+CTRL_EXT_LPCD        equ 0x4
+CTRL_EXT_FORCE_SMBUS equ 0x800
+CTRL_EXT_RO_DIS      equ 0x20000
+CTRL_EXT_DRV_LOAD    equ 0x10000000
+CTRL_EXT_BIT22       equ (1 << 22)
+ICH_FWSM_PCIM2PCI    equ 0x01000000
+ICH_FWSM_PCIM2PCI_COUNT equ 2000
+KABGTXD_BGSQLBIAS    equ 0x00050000
+PCI_CAP_PTR          equ 0x34
+PCI_EXP_CAP_ID       equ 0x10
+PCI_EXP_DEVCTL_FLR   equ 0x8000
+
+; STATUS bits
+STATUS_LU            equ 0x2
+STATUS_LAN_INIT_DONE equ 0x200
+STATUS_PHYRA         equ 0x400
+
+; EXTCNF_CTRL
+EXTCNF_SWFLAG        equ 0x20
+EXTCNF_GATE_PHY_CFG  equ 0x80
+
+; FEXTNVM3
+FEXTNVM3_PHY_CFG_COUNTER_MASK  equ 0x0C000000
+FEXTNVM3_PHY_CFG_COUNTER_50MS  equ 0x08000000
+
+; PHY_CTRL (MAC CSR) — clear LPLU / gig disable for link
+PHY_CTRL_D0A_LPLU        equ 0x2
+PHY_CTRL_NOND0A_LPLU     equ 0x4
+PHY_CTRL_NOND0A_GBE_DIS  equ 0x8
+PHY_CTRL_GBE_DISABLE     equ 0x40
+
+; RFCTL / MANC / SWSM
+RFCTL_NFSW_DIS           equ 0x40
+RFCTL_NFSR_DIS           equ 0x80
+MANC_ARP_EN              equ 0x2000
+MANC_EN_MAC_ADDR_FILTER  equ 0x100000
+MANC_EN_MNG2HOST         equ 0x200000
+SWSM_DRV_LOAD            equ 0x8
+TXDCTL_FULL_WB           equ 0x01010000
+TXDCTL_MAX_PREFETCH      equ 0x0100001F
+TXDCTL_BIT22             equ (1 << 22)
+TARC0_MULTIQ_3           equ 0x30000000
+TARC0_MULTIQ_2           equ 0x20000000
+FEXTNVM7_SIDE_CLK_UNGATE equ 0x4
+FEXTNVM9_CLKGATE_DIS     equ 0x800
+FEXTNVM9_CLKREQ_DIS      equ 0x1000
+FEXTNVM11_DISABLE_MULR   equ 0x2000
+PBECCSTS_ECC_ENABLE      equ 0x10000
+PCICFG_DESC_RING_STATUS  equ 0xE4
+FLUSH_DESC_REQUIRED      equ 0x100
+TCTL_RTLC                equ 0x01000000
+
+; MDIC / PHY
+MDIC_REG_SHIFT equ 16
+MDIC_PHY_SHIFT equ 21
+MDIC_OP_WRITE  equ 0x04000000
+MDIC_OP_READ   equ 0x08000000
+MDIC_READY     equ 0x10000000
+MDIC_ERROR     equ 0x40000000
+PHY_ADDR       equ 1
+PHY_BMCR       equ 0
+PHY_PAGE_SELECT equ 31
+IGP_PAGE_SHIFT equ 5
+BMCR_ANENABLE  equ 0x1000
+BMCR_ANRESTART equ 0x0200
+HV_OEM_PAGE    equ 768
+HV_OEM_REG     equ 25
+HV_OEM_LPLU    equ 0x0004
+HV_OEM_GBE_DIS equ 0x0040
+HV_OEM_RESTART_AN equ 0x0400
+ICH_FWSM_FW_VALID equ 0x8000
 
 ; RCTL bits
 RCTL_EN        equ 0x00000002
@@ -83,38 +193,110 @@ e1000_driver_init:
     mov [e1000_mmio], rcx
     mov [e1000_bdf], edx
 
+    ; Unpack BDF and read PCI ID (vendor:device)
+    mov eax, edx
+    movzx r8d, al                   ; function
+    mov ecx, eax
+    shr ecx, 8
+    movzx edx, cl                   ; device
+    shr eax, 16
+    movzx ecx, al                   ; bus
+    mov r9, 0
+    call pci_read_config
+    mov [e1000_pci_id], eax
+    shr eax, 16
+    mov [e1000_device_id], ax
+
     lea rcx, [msg_e1000_init]
     call con_puts
     lea rcx, [msg_e1000_init]
     call serial_puts
-
+    lea rcx, [msg_e1000_devid]
+    call con_puts
+    movzx ecx, word [e1000_device_id]
+    call con_put_hex
+    call con_newline
+    cmp word [e1000_device_id], 0x0D4E
+    jne .after_chip_name
+    lea rcx, [msg_e1000_i219]
+    call con_puts
+    lea rcx, [msg_e1000_i219]
+    call serial_puts
+.after_chip_name:
     mov rbx, [e1000_mmio]
     test rbx, rbx
     jz .fail
 
-    ; Soft reset
+    ; Map BAR for metal (BARs may sit above the 4GB identity map)
+    mov rcx, rbx
+    mov rdx, 0x200000
+    call vmm_map_mmio
+
+    ; Read MAC before any reset (RAL cleared by RST on I219)
+    call e1000_read_mac
+
+    ; I219: PCI FLR clears TX unit-hang that soft-reset cannot
+    call e1000_pci_flr
+    mov rbx, [e1000_mmio]
+    mov rcx, rbx
+    mov rdx, 0x200000
+    call vmm_map_mmio
+
+    ; Drain any pre-FLR hang flag, then MAC soft-reset
+    call e1000_clear_i219_hang
+    call e1000_mmio_wait_me
     mov eax, [rbx + E1000_CTRL]
+    or eax, CTRL_GIO_MASTER_DISABLE
+    call e1000_ew32_ctrl
+    mov rcx, 10
+    call sleep_ms
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_CTRL]
+    and eax, ~CTRL_GIO_MASTER_DISABLE
     or eax, CTRL_RST
-    mov [rbx + E1000_CTRL], eax
-    mov rcx, 20
+    call e1000_ew32_ctrl
+    mov rcx, 50
     call sleep_ms
 
-    ; Link up + auto-speed
+    ; ICH reset follow-up
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_KABGTXD]
+    or eax, KABGTXD_BGSQLBIAS
+    mov ecx, E1000_KABGTXD
+    call e1000_ew32
+
+    ; Re-program MAC into RAL after reset
+    mov eax, dword [e1000_mac]
+    mov ecx, E1000_RAL0
+    call e1000_ew32
+    movzx eax, word [e1000_mac + 4]
+    or eax, 0x80000000
+    mov ecx, E1000_RAH0
+    call e1000_ew32
+
+    ; Metal e1000e/I219: take PHY out of reset and force power-on
+    call e1000_phy_bringup
+
+    ; Set link up + auto-speed detect (TX enable comes AFTER link)
+    call e1000_mmio_wait_me
     mov eax, [rbx + E1000_CTRL]
-    or eax, CTRL_SLU
-    mov [rbx + E1000_CTRL], eax
+    and eax, ~(CTRL_PHY_RST | CTRL_GIO_MASTER_DISABLE)
+    or eax, CTRL_SLU | CTRL_ASDE
+    call e1000_ew32_ctrl
 
     ; Disable interrupts
-    mov dword [rbx + E1000_IMC], 0xFFFFFFFF
+    mov eax, 0xFFFFFFFF
+    mov ecx, E1000_IMC
+    call e1000_ew32
     mov eax, [rbx + E1000_ICR]
 
     ; Clear multicast table
-    xor eax, eax
-    mov ecx, 128
+    xor r8d, r8d
 .clear_mta:
-    mov [rbx + E1000_MTA + rax * 4], eax
-    inc eax
-    cmp eax, ecx
+    call e1000_mmio_wait_me
+    mov dword [rbx + E1000_MTA + r8 * 4], 0
+    inc r8d
+    cmp r8d, 128
     jb .clear_mta
 
     call e1000_read_mac
@@ -125,23 +307,127 @@ e1000_driver_init:
     test rax, rax
     jz .fail
 
-    ; Enable RX
-    mov eax, RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC
-    mov [rbx + E1000_RCTL], eax
+    ; Claim NIC from firmware/ME + unblock host RX path
+    call e1000_take_ownership
+    call e1000_init_hw_bits
 
-    ; Enable TX
-    mov eax, TCTL_EN | TCTL_PSP
+    ; TIPG + TCTL without EN yet (Linux starts TX after link-up)
+    mov eax, 0x00602008
+    mov ecx, E1000_TIPG
+    call e1000_ew32
+    mov eax, TCTL_PSP | TCTL_RTLC
     or eax, (15 << TCTL_CT_SHIFT)
-    or eax, (64 << TCTL_COLD_SHIFT)
-    mov [rbx + E1000_TCTL], eax
+    or eax, (63 << TCTL_COLD_SHIFT)
+    mov ecx, E1000_TCTL
+    call e1000_ew32
 
-    mov dword [rbx + E1000_TIPG], 0x0060200A
+    ; TXDCTL writeback/prefetch policy
+    mov eax, TXDCTL_FULL_WB
+    or eax, TXDCTL_MAX_PREFETCH
+    or eax, TXDCTL_BIT22
+    mov ecx, E1000_TXDCTL
+    call e1000_ew32
+    mov ecx, E1000_TXDCTL1
+    call e1000_ew32
+
+    ; Enable RX only for now
+    mov eax, RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC
+    mov ecx, E1000_RCTL
+    call e1000_ew32
+    mov eax, NUM_RX_DESC - 1
+    mov ecx, E1000_RDT
+    call e1000_ew32
+
+    lea rcx, [msg_e1000_txdctl]
+    call con_puts
+    mov eax, [rbx + E1000_TXDCTL]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+
+    ; Print MAC so we can verify UEFI/RAL vs synthetic
+    lea rcx, [msg_e1000_mac]
+    call con_puts
+    movzx ecx, byte [e1000_mac]
+    call con_put_hex
+    lea rcx, [msg_colon]
+    call con_puts
+    movzx ecx, byte [e1000_mac + 1]
+    call con_put_hex
+    lea rcx, [msg_colon]
+    call con_puts
+    movzx ecx, byte [e1000_mac + 2]
+    call con_put_hex
+    lea rcx, [msg_colon]
+    call con_puts
+    movzx ecx, byte [e1000_mac + 3]
+    call con_put_hex
+    lea rcx, [msg_colon]
+    call con_puts
+    movzx ecx, byte [e1000_mac + 4]
+    call con_put_hex
+    lea rcx, [msg_colon]
+    call con_puts
+    movzx ecx, byte [e1000_mac + 5]
+    call con_put_hex
+    call con_newline
+
+    ; Wait up to ~5s for link (STATUS.LU)
+    mov ecx, 250
+.wait_link:
+    mov eax, [rbx + E1000_STATUS]
+    test eax, STATUS_LU
+    jnz .link_up
+    push rcx
+    mov rcx, 20
+    call sleep_ms
+    pop rcx
+    loop .wait_link
+
+    lea rcx, [msg_e1000_nolink]
+    call con_puts
+    lea rcx, [msg_e1000_nolink]
+    call serial_puts
+    lea rcx, [msg_e1000_status]
+    call con_puts
+    mov eax, [rbx + E1000_STATUS]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    mov eax, [rbx + E1000_STATUS]
+    test eax, STATUS_PHYRA
+    jz .nolink_done
+    lea rcx, [msg_e1000_phyra]
+    call con_puts
+    lea rcx, [msg_e1000_phyra]
+    call serial_puts
+.nolink_done:
+    mov byte [e1000_have_link], 0
+    mov rax, 1                      ; init OK; DHCP may still fail without cable
+    jmp .done
+
+.link_up:
+    mov byte [e1000_have_link], 1
+
+    ; Linux: enable TX only after link is up; adjust TARC speed bit
+    mov eax, [rbx + E1000_STATUS]
+    and eax, 0xC0                    ; SPEED field
+    cmp eax, 0x80                    ; 1000 Mbps?
+    je .tarc_ok
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_TARC0]
+    and eax, ~(1 << 21)
+    mov [rbx + E1000_TARC0], eax
+.tarc_ok:
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_TCTL]
+    or eax, TCTL_EN
+    mov [rbx + E1000_TCTL], eax
 
     lea rcx, [msg_e1000_ok]
     call con_puts
     lea rcx, [msg_e1000_ok]
     call serial_puts
-
     mov rax, 1
     jmp .done
 
@@ -160,25 +446,574 @@ e1000_driver_init:
     pop rbp
     ret
 
+; Claim device from ME/firmware and open host packet path
+; RBX = mmio
+e1000_take_ownership:
+    push rax
+
+    mov eax, [rbx + E1000_CTRL_EXT]
+    or eax, CTRL_EXT_DRV_LOAD | CTRL_EXT_RO_DIS | CTRL_EXT_BIT22
+    and eax, ~CTRL_EXT_FORCE_SMBUS
+    mov [rbx + E1000_CTRL_EXT], eax
+
+    mov eax, [rbx + E1000_SWSM]
+    or eax, SWSM_DRV_LOAD
+    mov [rbx + E1000_SWSM], eax
+
+    ; SPT/CNP clock ungates (needed for reliable TX on I219)
+    mov eax, [rbx + E1000_FEXTNVM7]
+    or eax, FEXTNVM7_SIDE_CLK_UNGATE
+    mov [rbx + E1000_FEXTNVM7], eax
+    mov eax, [rbx + E1000_FEXTNVM9]
+    or eax, FEXTNVM9_CLKGATE_DIS | FEXTNVM9_CLKREQ_DIS
+    mov [rbx + E1000_FEXTNVM9], eax
+
+    mov dword [rbx + E1000_RXCSUM], 0
+    mov eax, [rbx + E1000_RFCTL]
+    or eax, RFCTL_NFSW_DIS | RFCTL_NFSR_DIS
+    mov [rbx + E1000_RFCTL], eax
+
+    mov dword [rbx + E1000_WUC], 0
+    mov dword [rbx + E1000_WUFC], 0
+
+    mov eax, [rbx + E1000_MANC]
+    and eax, ~(MANC_ARP_EN | MANC_EN_MAC_ADDR_FILTER)
+    or eax, MANC_EN_MNG2HOST
+    mov [rbx + E1000_MANC], eax
+
+    mov eax, dword [e1000_mac]
+    mov [rbx + E1000_RAL0], eax
+    movzx eax, word [e1000_mac + 4]
+    or eax, 0x80000000
+    mov [rbx + E1000_RAH0], eax
+
+    pop rax
+    ret
+
+; Linux e1000_initialize_hw_bits_ich8lan (subset for I219 TX)
+e1000_init_hw_bits:
+    push rax
+
+    mov eax, [rbx + E1000_TARC0]
+    or eax, (1 << 0) | (1 << 21) | (1 << 23) | (1 << 24) | (1 << 26) | (1 << 27)
+    and eax, ~TARC0_MULTIQ_3
+    or eax, TARC0_MULTIQ_2
+    mov [rbx + E1000_TARC0], eax
+
+    mov eax, [rbx + E1000_TARC1]
+    or eax, (1 << 0) | (1 << 24) | (1 << 26) | (1 << 28) | (1 << 30)
+    mov [rbx + E1000_TARC1], eax
+
+    ; ECC + MEHE on LPT and newer (I219 included)
+    mov eax, [rbx + E1000_PBECCSTS]
+    or eax, PBECCSTS_ECC_ENABLE
+    mov [rbx + E1000_PBECCSTS], eax
+    mov eax, [rbx + E1000_CTRL]
+    or eax, CTRL_MEHE
+    mov [rbx + E1000_CTRL], eax
+
+    pop rax
+    ret
+
+; Wait if ME is accessing MAC CSR (FWSM.PCIM2PCI)
+e1000_mmio_wait_me:
+    push rax
+    push rcx
+    mov ecx, ICH_FWSM_PCIM2PCI_COUNT
+.wait:
+    mov eax, [rbx + E1000_FWSM]
+    test eax, ICH_FWSM_PCIM2PCI
+    jz .ok
+    pause
+    dec ecx
+    jnz .wait
+.ok:
+    pop rcx
+    pop rax
+    ret
+
+; ECX = register offset, EAX = value, RBX = mmio
+e1000_ew32:
+    push rax
+    call e1000_mmio_wait_me
+    pop rax
+    mov [rbx + rcx], eax
+    ret
+
+; EAX = CTRL value
+e1000_ew32_ctrl:
+    push rcx
+    mov ecx, E1000_CTRL
+    call e1000_ew32
+    pop rcx
+    ret
+
+; PCI Function Level Reset — only reliable way to clear I219 TX unit hang
+e1000_pci_flr:
+    push rax
+    push rcx
+    push rdx
+    push r8
+    push r9
+    push r10
+    push r11
+
+    cmp word [e1000_device_id], 0x100E
+    je .done
+    cmp word [e1000_device_id], 0x100F
+    je .done
+
+    lea rcx, [msg_e1000_flr]
+    call con_puts
+
+    ; Unpack BDF
+    mov eax, [e1000_bdf]
+    movzx r11d, al                  ; func
+    mov ecx, eax
+    shr ecx, 8
+    movzx r10d, cl                  ; dev
+    shr eax, 16
+    movzx r9d, al                   ; bus (keep in r9d awkwardly)
+    ; Use: rcx=bus, rdx=dev, r8=func
+    mov ecx, r9d
+    mov edx, r10d
+    mov r8d, r11d
+
+    ; Find PCIe capability
+    mov r9, PCI_CAP_PTR
+    push rcx
+    push rdx
+    push r8
+    call pci_read_config
+    pop r8
+    pop rdx
+    pop rcx
+    movzx eax, al                   ; cap pointer
+    test eax, eax
+    jz .reenable
+
+.cap_walk:
+    and eax, 0xFC
+    jz .reenable
+    mov r9, rax
+    push rax
+    push rcx
+    push rdx
+    push r8
+    call pci_read_config
+    pop r8
+    pop rdx
+    pop rcx
+    pop r9                          ; current cap offset
+    cmp al, PCI_EXP_CAP_ID
+    je .got_pcie
+    movzx eax, ah                   ; next ptr
+    jmp .cap_walk
+
+.got_pcie:
+    ; Device Control at cap+8, set FLR bit 15
+    lea r9, [r9 + 8]
+    and r9, 0xFC
+    push rcx
+    push rdx
+    push r8
+    push r9
+    call pci_read_config
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    or eax, PCI_EXP_DEVCTL_FLR
+    push rax
+    sub rsp, 32
+    call pci_write_config
+    add rsp, 40
+
+    mov rcx, 100
+    call sleep_ms
+
+.reenable:
+    ; Restore Memory Space + Bus Master
+    mov eax, [e1000_bdf]
+    movzx r8d, al
+    mov ecx, eax
+    shr ecx, 8
+    movzx edx, cl
+    shr eax, 16
+    movzx ecx, al
+    mov r9, 0x04
+    push rcx
+    push rdx
+    push r8
+    call pci_read_config
+    pop r8
+    pop rdx
+    pop rcx
+    or eax, 0x06
+    mov r9, 0x04
+    push rax
+    sub rsp, 32
+    call pci_write_config
+    add rsp, 40
+
+.done:
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    pop rax
+    ret
+
+; If UEFI left I219 in descriptor-ring hang, attempt a dummy TX drain
+e1000_clear_i219_hang:
+    push rax
+    push rcx
+    push rdx
+    push r8
+    push r9
+    push rsi
+    push rdi
+
+    cmp word [e1000_device_id], 0x100E
+    je .done
+    cmp word [e1000_device_id], 0x100F
+    je .done
+
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_FEXTNVM11]
+    or eax, FEXTNVM11_DISABLE_MULR
+    mov [rbx + E1000_FEXTNVM11], eax
+
+    mov eax, [e1000_bdf]
+    movzx r8d, al
+    mov ecx, eax
+    shr ecx, 8
+    movzx edx, cl
+    shr eax, 16
+    movzx ecx, al
+    mov r9, PCICFG_DESC_RING_STATUS
+    call pci_read_config
+    test eax, FLUSH_DESC_REQUIRED
+    jz .done
+
+    lea rcx, [msg_e1000_hang]
+    call con_puts
+
+    ; Allocate a throwaway ring page and force one TX to unwedge
+    call pmm_alloc_page
+    test rax, rax
+    jz .done
+    mov rsi, rax
+    mov rdi, rax
+    mov rcx, 4096 / 8
+    xor rax, rax
+    rep stosq
+
+    ; Descriptor 0: buffer = ring itself, len=512, CMD=IFCS
+    mov rax, rsi
+    mov [rsi], rax
+    mov dword [rsi + 8], 512 | (0x02 << 24)
+    mov dword [rsi + 12], 0
+
+    call e1000_mmio_wait_me
+    mov rax, rsi
+    mov [rbx + E1000_TDBAL], eax
+    shr rax, 32
+    mov [rbx + E1000_TDBAH], eax
+    mov dword [rbx + E1000_TDLEN], 128
+    mov dword [rbx + E1000_TDH], 0
+    mov dword [rbx + E1000_TDT], 0
+    mov eax, [rbx + E1000_TCTL]
+    or eax, TCTL_EN
+    mov [rbx + E1000_TCTL], eax
+    sfence
+    call e1000_mmio_wait_me
+    mov dword [rbx + E1000_TDT], 1
+    mov rcx, 1
+    call sleep_ms
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_TCTL]
+    and eax, ~TCTL_EN
+    mov [rbx + E1000_TCTL], eax
+
+.done:
+    pop rdi
+    pop rsi
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    pop rax
+    ret
+
+; Print GPTC/GPRC (clears on read) — useful when DHCP fails
+e1000_dump_stats:
+    push rbx
+    push rax
+    push rcx
+    mov rbx, [e1000_mmio]
+    test rbx, rbx
+    jz .done
+    lea rcx, [msg_e1000_gptc]
+    call con_puts
+    mov eax, [rbx + E1000_GPTC]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_gprc]
+    call con_puts
+    mov eax, [rbx + E1000_GPRC]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+.done:
+    pop rcx
+    pop rax
+    pop rbx
+    ret
+
+; Bring PHY out of reset / power-down (ICH/PCH/I219; no-op-ish on QEMU)
+; Uses RBX = mmio base
+e1000_phy_bringup:
+    push rax
+    push rcx
+    push rdx
+
+    ; QEMU 82540EM does not need PCH PHY gymnastics
+    cmp word [e1000_device_id], 0x100E
+    je .qemu_simple
+    cmp word [e1000_device_id], 0x100F
+    je .qemu_simple
+
+    ; Gate automatic PHY config by hardware
+    mov eax, [rbx + E1000_EXTCNF_CTRL]
+    or eax, EXTCNF_GATE_PHY_CFG
+    mov [rbx + E1000_EXTCNF_CTRL], eax
+
+    ; Ensure MAC is not stuck in forced SMBus mode
+    mov eax, [rbx + E1000_CTRL_EXT]
+    and eax, ~CTRL_EXT_FORCE_SMBUS
+    mov [rbx + E1000_CTRL_EXT], eax
+
+    ; FEXTNVM3: 50ms PHY config counter (Linux e1000e)
+    mov eax, [rbx + E1000_FEXTNVM3]
+    and eax, ~FEXTNVM3_PHY_CFG_COUNTER_MASK
+    or eax, FEXTNVM3_PHY_CFG_COUNTER_50MS
+    mov [rbx + E1000_FEXTNVM3], eax
+
+    ; Toggle LANPHYPC: OVERRIDE=1, VALUE=0, then drop OVERRIDE
+    mov eax, [rbx + E1000_CTRL]
+    or eax, CTRL_LANPHYPC_OVERRIDE
+    and eax, ~CTRL_LANPHYPC_VALUE
+    mov [rbx + E1000_CTRL], eax
+    mov rcx, 1
+    call sleep_ms
+    mov eax, [rbx + E1000_CTRL]
+    and eax, ~CTRL_LANPHYPC_OVERRIDE
+    mov [rbx + E1000_CTRL], eax
+
+    ; Wait for LCD power-cycle done (CTRL_EXT.LPCD), then settle
+    mov ecx, 40
+.wait_lpcd:
+    mov eax, [rbx + E1000_CTRL_EXT]
+    test eax, CTRL_EXT_LPCD
+    jnz .lpcd_ok
+    push rcx
+    mov rcx, 5
+    call sleep_ms
+    pop rcx
+    loop .wait_lpcd
+.lpcd_ok:
+    mov rcx, 50
+    call sleep_ms
+
+    ; Pulse CTRL.PHY_RST
+    mov eax, [rbx + E1000_CTRL]
+    or eax, CTRL_PHY_RST
+    mov [rbx + E1000_CTRL], eax
+    mov rcx, 20
+    call sleep_ms
+    mov eax, [rbx + E1000_CTRL]
+    and eax, ~CTRL_PHY_RST
+    mov [rbx + E1000_CTRL], eax
+
+    ; Wait for NVM/LAN init done
+    mov ecx, 100
+.wait_lan_init:
+    mov eax, [rbx + E1000_STATUS]
+    test eax, STATUS_LAN_INIT_DONE
+    jnz .lan_init_ok
+    push rcx
+    mov rcx, 10
+    call sleep_ms
+    pop rcx
+    loop .wait_lan_init
+.lan_init_ok:
+
+    ; PHYRA is sticky — software must clear it by writing STATUS
+    mov eax, [rbx + E1000_STATUS]
+    and eax, ~STATUS_PHYRA
+    mov [rbx + E1000_STATUS], eax
+
+    ; Clear MAC-side LPLU / gig-disable so copper can link
+    mov eax, [rbx + E1000_PHY_CTRL]
+    and eax, ~(PHY_CTRL_D0A_LPLU | PHY_CTRL_NOND0A_LPLU | PHY_CTRL_NOND0A_GBE_DIS | PHY_CTRL_GBE_DISABLE)
+    mov [rbx + E1000_PHY_CTRL], eax
+
+    ; Acquire SWFLAG before MDIO (ME/firmware semaphore)
+    call e1000_acquire_swflag
+    test rax, rax
+    jz .skip_mdio
+
+    ; Restart AN via BMCR
+    mov edx, BMCR_ANENABLE | BMCR_ANRESTART
+    mov ecx, PHY_BMCR
+    call e1000_mdic_write
+
+    ; HV_OEM_BITS (page 768, reg 25): clear LPLU/GBE_DIS, set RESTART_AN
+    mov edx, HV_OEM_PAGE << IGP_PAGE_SHIFT
+    mov ecx, PHY_PAGE_SELECT
+    call e1000_mdic_write
+    mov edx, HV_OEM_RESTART_AN
+    mov ecx, HV_OEM_REG
+    call e1000_mdic_write
+    ; Restore page 0
+    xor edx, edx
+    mov ecx, PHY_PAGE_SELECT
+    call e1000_mdic_write
+
+    call e1000_release_swflag
+.skip_mdio:
+
+    ; Ungate HW PHY config
+    mov eax, [rbx + E1000_EXTCNF_CTRL]
+    and eax, ~EXTCNF_GATE_PHY_CFG
+    mov [rbx + E1000_EXTCNF_CTRL], eax
+    mov rcx, 100
+    call sleep_ms
+    jmp .done
+
+.qemu_simple:
+    mov eax, [rbx + E1000_CTRL]
+    and eax, ~CTRL_PHY_RST
+    or eax, CTRL_SLU | CTRL_ASDE
+    mov [rbx + E1000_CTRL], eax
+
+.done:
+    pop rdx
+    pop rcx
+    pop rax
+    ret
+
+; RAX = 1 if SWFLAG acquired
+e1000_acquire_swflag:
+    push rcx
+    push rdx
+    mov ecx, 100
+.swflag_try:
+    mov eax, [rbx + E1000_EXTCNF_CTRL]
+    test eax, EXTCNF_SWFLAG
+    jnz .swflag_wait
+    or eax, EXTCNF_SWFLAG
+    mov [rbx + E1000_EXTCNF_CTRL], eax
+    mov eax, [rbx + E1000_EXTCNF_CTRL]
+    test eax, EXTCNF_SWFLAG
+    jnz .swflag_ok
+.swflag_wait:
+    push rcx
+    mov rcx, 10
+    call sleep_ms
+    pop rcx
+    loop .swflag_try
+    xor eax, eax
+    pop rdx
+    pop rcx
+    ret
+.swflag_ok:
+    mov eax, 1
+    pop rdx
+    pop rcx
+    ret
+
+e1000_release_swflag:
+    push rax
+    mov eax, [rbx + E1000_EXTCNF_CTRL]
+    and eax, ~EXTCNF_SWFLAG
+    mov [rbx + E1000_EXTCNF_CTRL], eax
+    pop rax
+    ret
+
+; ECX = PHY register (low 5 bits), EDX = 16-bit data. RBX = mmio. RAX=1 ok.
+e1000_mdic_write:
+    push rcx
+    mov eax, edx
+    and eax, 0xFFFF
+    and ecx, 0x1F
+    shl ecx, MDIC_REG_SHIFT
+    or eax, ecx
+    mov ecx, PHY_ADDR
+    shl ecx, MDIC_PHY_SHIFT
+    or eax, ecx
+    or eax, MDIC_OP_WRITE
+    mov [rbx + E1000_MDIC], eax
+
+    mov ecx, 1000
+.wait_mdic:
+    mov eax, [rbx + E1000_MDIC]
+    test eax, MDIC_READY
+    jnz .mdic_done
+    push rcx
+    mov rcx, 1
+    call sleep_ms
+    pop rcx
+    loop .wait_mdic
+    xor eax, eax
+    pop rcx
+    ret
+.mdic_done:
+    test eax, MDIC_ERROR
+    jnz .mdic_err
+    mov eax, 1
+    pop rcx
+    ret
+.mdic_err:
+    xor eax, eax
+    pop rcx
+    ret
+
 e1000_read_mac:
     push rbx
     push rsi
     mov rbx, [e1000_mmio]
 
-    ; Try EEPROM word 0..2
+    ; Prefer RAL first (UEFI often left a valid MAC; EEPROM/EERD varies by chip)
+    mov eax, [rbx + E1000_RAL0]
+    mov edx, [rbx + E1000_RAH0]
+    mov [e1000_mac], eax
+    mov [e1000_mac + 4], dx
+    mov eax, dword [e1000_mac]
+    or eax, dword [e1000_mac + 2]
+    test eax, eax
+    jnz .mac_ok
+
+    ; Fallback: legacy EERD (82540/QEMU). ICH/I219 uses different DONE bit.
     xor esi, esi
 .eeprom_loop:
     mov eax, esi
-    shl eax, 8
-    or eax, 0x00000001              ; Start read
+    shl eax, 2
+    or eax, 0x00000001
     mov [rbx + E1000_EERD], eax
     mov ecx, 1000
 .wait_eerd:
     mov eax, [rbx + E1000_EERD]
-    test eax, 0x10                  ; DONE
+    test eax, 0x02                  ; ICH DONE
+    jnz .eerd_done
+    test eax, 0x10                  ; legacy DONE
     jnz .eerd_done
     loop .wait_eerd
-    jmp .use_ral
+    jmp .mac_ok                     ; leave zeros / whatever we have
 .eerd_done:
     shr eax, 16
     mov [e1000_mac + rsi * 2], ax
@@ -186,24 +1021,20 @@ e1000_read_mac:
     cmp esi, 3
     jb .eeprom_loop
 
-    ; Validate MAC (not all zeros)
+.mac_ok:
+    ; If still zero, synthesize a locally-administered MAC so stack can run
     mov eax, dword [e1000_mac]
     or eax, dword [e1000_mac + 2]
     test eax, eax
-    jnz .mac_ok
+    jnz .program
+    mov dword [e1000_mac], 0x005E0200
+    mov word [e1000_mac + 4], 0x86BC
 
-.use_ral:
-    mov eax, [rbx + E1000_RAL0]
-    mov [e1000_mac], eax
-    mov eax, [rbx + E1000_RAH0]
-    mov [e1000_mac + 4], ax
-
-.mac_ok:
-    ; Program RAL/RAH with our MAC
+.program:
     mov eax, dword [e1000_mac]
     mov [rbx + E1000_RAL0], eax
     movzx eax, word [e1000_mac + 4]
-    or eax, 0x80000000              ; AV bit
+    or eax, 0x80000000
     mov [rbx + E1000_RAH0], eax
 
     pop rsi
@@ -304,6 +1135,14 @@ e1000_setup_tx:
     pop rbx
     ret
 
+; RAX = 1 if this is QEMU's 82540EM (0x100E) — safe for fake 10.0.2.15 fallback
+e1000_is_qemu:
+    cmp word [e1000_device_id], 0x100E
+    sete al
+    movzx eax, al
+    ret
+
+; RCX = destination buffer (6 bytes)
 e1000_driver_get_mac:
     push rsi
     push rdi
@@ -353,12 +1192,54 @@ e1000_driver_send:
     mov byte [rdi + 11], 0x0B       ; EOP|IFCS|RS
     mov dword [rdi + 12], 0
 
+    ; Ensure descriptor stores are visible before ringing the doorbell
+    sfence
+    call e1000_mmio_wait_me
+
     ; Advance TDT
     inc ebx
     and ebx, NUM_TX_DESC - 1
     mov [tx_cur], ebx
     mov rax, [e1000_mmio]
     mov [rax + E1000_TDT], ebx
+
+    ; ME workaround: confirm TDT stuck
+    call e1000_mmio_wait_me
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_TDT]
+    cmp eax, ebx
+    je .tdt_ok
+    lea rcx, [msg_e1000_tdtbad]
+    call con_puts
+.tdt_ok:
+
+    ; Wait briefly for DD (descriptor done) so we know DMA ran
+    mov ecx, 100
+.wait_tx_dd:
+    test byte [rdi + 12], 0x01
+    jnz .tx_ok
+    push rcx
+    mov rcx, 1
+    call sleep_ms
+    pop rcx
+    loop .wait_tx_dd
+    lea rcx, [msg_e1000_txfail]
+    call con_puts
+    lea rcx, [msg_e1000_tdh]
+    call con_puts
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_TDH]
+    mov rcx, rax
+    call con_put_hex
+    lea rcx, [msg_slash]
+    call con_puts
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_TDT]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    jmp .done
+.tx_ok:
     push rcx
     lea rcx, [msg_tx]
     call serial_puts
@@ -446,6 +1327,9 @@ section .data
 align 8
 e1000_mmio dq 0
 e1000_bdf dd 0
+e1000_pci_id dd 0
+e1000_device_id dw 0
+e1000_have_link db 0
 e1000_mac db 0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0, 0
 rx_ring_phys dq 0
 tx_ring_phys dq 0
@@ -454,7 +1338,23 @@ rx_cur dd 0
 tx_cur dd 0
 
 msg_e1000_init db "Net: Intel e1000 Ethernet initializing...", 13, 10, 0
+msg_e1000_devid db "Net: e1000 PCI device ID: 0x", 0
+msg_e1000_i219 db "Net: chip is I219-LM10 (PCH) — using e1000e PHY path.", 13, 10, 0
+msg_e1000_mac db "Net: e1000 MAC ", 0
+msg_colon db ":", 0
+msg_e1000_txdctl db "Net: e1000 TXDCTL=0x", 0
+msg_e1000_flr db "Net: e1000 issuing PCI function-level reset...", 13, 10, 0
+msg_e1000_hang db "Net: e1000 I219 descriptor hang flagged — flushing.", 13, 10, 0
+msg_e1000_tdtbad db "Net: e1000 TDT write ignored (ME arbiter?).", 13, 10, 0
 msg_e1000_ok   db "Net: e1000 link ready.", 13, 10, 0
+msg_e1000_nolink db "Net: e1000 init OK but no cable link yet.", 13, 10, 0
+msg_e1000_status db "Net: e1000 STATUS=0x", 0
+msg_e1000_phyra db "Net: e1000 PHYRA still set (ME may own PHY).", 13, 10, 0
+msg_e1000_gptc db "Net: e1000 GPTC (tx good)=0x", 0
+msg_e1000_gprc db "Net: e1000 GPRC (rx good)=0x", 0
+msg_e1000_txfail db "Net: e1000 TX descriptor timeout (queue not running?).", 13, 10, 0
+msg_e1000_tdh db "Net: e1000 TDH/TDT=0x", 0
+msg_slash db "/", 0
 msg_e1000_fail db "Net: e1000 init FAILED.", 13, 10, 0
 msg_rx db "RX", 13, 10, 0
 msg_tx db "TX", 13, 10, 0

@@ -19,6 +19,7 @@ NETDEV_IWLWIFI      equ 2
 NETDEV_E1000        equ 3
 NETDEV_VIRTIO       equ 4
 NETDEV_GENERIC_WIFI equ 5
+NETDEV_RTL8169      equ 6
 
 extern con_puts
 extern con_put_hex
@@ -245,18 +246,47 @@ pci_init:
     mov r9, 0x08
     call pci_read_config
     shr eax, 16
+    cmp ax, 0x0200                  ; Ethernet controller
+    je .eth_unknown
     cmp ax, 0x0280                  ; Network / Other (common WiFi class)
     jne .next_func
     mov eax, NETDEV_GENERIC_WIFI
+    jmp .have_type
+.eth_unknown:
+    ; Unknown Ethernet PCI ID — pick driver by vendor
+    mov rcx, r12
+    mov rdx, r13
+    mov r8, r14
+    mov r9, 0
+    call pci_read_config
+    cmp ax, 0x10EC
+    jne .eth_intel
+    mov eax, NETDEV_RTL8169
+    jmp .have_type
+.eth_intel:
+    cmp ax, 0x8086
+    jne .eth_unsupported
+    mov eax, NETDEV_E1000
+    jmp .have_type
+.eth_unsupported:
+    lea rcx, [msg_eth_unsup]
+    call con_puts
+    lea rcx, [msg_eth_unsup]
+    call serial_puts
+    movzx ecx, ax
+    call con_put_hex
+    call con_newline
+    jmp .next_func
 
 .have_type:
-    ; Prefer Ethernet (e1000/virtio) over WiFi for first bind if none yet;
-    ; if e1000 found later while only iwl claimed, upgrade.
+    ; Prefer Ethernet over WiFi when both exist
     cmp dword [netdev_type], NETDEV_NONE
     je .claim
     cmp eax, NETDEV_E1000
     je .claim
     cmp eax, NETDEV_VIRTIO
+    je .claim
+    cmp eax, NETDEV_RTL8169
     je .claim
     jmp .next_func
 
@@ -320,10 +350,28 @@ pci_init:
     call serial_puts
 
     cmp dword [netdev_type], NETDEV_NONE
-    jne .done
+    jne .have_net
     lea rcx, [msg_net_missing]
     call con_puts
     lea rcx, [msg_net_missing]
+    call serial_puts
+    jmp .done
+
+.have_net:
+    cmp dword [netdev_type], NETDEV_IWLWIFI
+    je .wifi_only
+    cmp dword [netdev_type], NETDEV_GENERIC_WIFI
+    je .wifi_only
+    lea rcx, [msg_eth_claimed]
+    call con_puts
+    lea rcx, [msg_eth_claimed]
+    call serial_puts
+    jmp .done
+
+.wifi_only:
+    lea rcx, [msg_wifi_only]
+    call con_puts
+    lea rcx, [msg_wifi_only]
     call serial_puts
 
 .done:
@@ -373,16 +421,45 @@ is_multi_func db 0
 ; Terminated by vendor=0
 align 8
 net_device_table:
-    ; --- Intel e1000 / e1000e (QEMU + common NICs) ---
+    ; --- Intel e1000 / e1000e (QEMU + laptop NICs) ---
     dd 0x100E8086, NETDEV_E1000     ; 82540EM (QEMU default e1000)
     dd 0x100F8086, NETDEV_E1000     ; 82545EM
     dd 0x10D38086, NETDEV_E1000     ; 82574L
     dd 0x10F58086, NETDEV_E1000     ; 82567LM
     dd 0x15038086, NETDEV_E1000     ; 82579LM
     dd 0x153A8086, NETDEV_E1000     ; I217-LM
+    dd 0x153B8086, NETDEV_E1000     ; I217-V
+    dd 0x15A08086, NETDEV_E1000     ; I218-LM
     dd 0x15A18086, NETDEV_E1000     ; I218-V
-    dd 0x15B78086, NETDEV_E1000     ; I219-V
+    dd 0x15A28086, NETDEV_E1000     ; I218-LM
+    dd 0x15A38086, NETDEV_E1000     ; I218-V
+    dd 0x15B78086, NETDEV_E1000     ; I219-LM
+    dd 0x15B88086, NETDEV_E1000     ; I219-V
+    dd 0x15D68086, NETDEV_E1000     ; I219-V
+    dd 0x15D78086, NETDEV_E1000     ; I219-LM
     dd 0x15D88086, NETDEV_E1000     ; I219-LM9
+    dd 0x0D4C8086, NETDEV_E1000     ; I219-LM11 (CML)
+    dd 0x0D4D8086, NETDEV_E1000     ; I219-V11 (CML)
+    dd 0x0D4E8086, NETDEV_E1000     ; I219-LM10 (CML / 400-series)
+    dd 0x0D4F8086, NETDEV_E1000     ; I219-V10 (CML)
+    dd 0x0D538086, NETDEV_E1000     ; I219-LM12
+    dd 0x0D558086, NETDEV_E1000     ; I219-V12
+    dd 0x0DC58086, NETDEV_E1000     ; I219-LM (ADL)
+    dd 0x0DC68086, NETDEV_E1000     ; I219-V (ADL)
+    dd 0x0DC78086, NETDEV_E1000     ; I219-LM
+    dd 0x0DC88086, NETDEV_E1000     ; I219-V
+    dd 0x15F28086, NETDEV_E1000     ; I225-LM
+    dd 0x15F38086, NETDEV_E1000     ; I225-V
+    dd 0x15F48086, NETDEV_E1000     ; I225-IT
+    dd 0x15F58086, NETDEV_E1000     ; I225-K
+    dd 0x125B8086, NETDEV_E1000     ; I226-V
+    dd 0x125C8086, NETDEV_E1000     ; I226-LM
+    ; --- Realtek RTL8168 / 8111 / 8169 ---
+    dd 0x816810EC, NETDEV_RTL8169   ; RTL8168/8111
+    dd 0x816110EC, NETDEV_RTL8169   ; RTL8161
+    dd 0x816910EC, NETDEV_RTL8169   ; RTL8169
+    dd 0x813610EC, NETDEV_RTL8169   ; RTL8136
+    dd 0x250210EC, NETDEV_RTL8169   ; RTL8125 (best-effort same path)
     ; --- Virtio-net ---
     dd 0x10001AF4, NETDEV_VIRTIO    ; legacy virtio-net
     dd 0x10411AF4, NETDEV_VIRTIO    ; modern virtio-net
@@ -405,7 +482,6 @@ net_device_table:
     dd 0x24FD8086, NETDEV_IWLWIFI   ; 8265/8260
     dd 0x24FB8086, NETDEV_IWLWIFI   ; 8265
     dd 0x25268086, NETDEV_IWLWIFI   ; 9260
-    dd 0x25268086, NETDEV_IWLWIFI   ; duplicate ok
     dd 0x9DF08086, NETDEV_IWLWIFI   ; 9560
     dd 0xA3708086, NETDEV_IWLWIFI   ; 9560 CNVi
     dd 0x31DC8086, NETDEV_IWLWIFI   ; 9462
@@ -419,5 +495,8 @@ msg_dev_prefix db "  PCI: ", 0
 msg_dev_middle db " -> ", 0
 msg_net_found db "PCI: Network device claimed, driver type 0x", 0
 msg_net_missing db "PCI: No supported network device found (will use loopback).", 13, 10, 0
+msg_eth_claimed db "PCI: Ethernet NIC selected (will try DHCP on cable/link).", 13, 10, 0
+msg_wifi_only db "PCI: Only WiFi found - no PCI Ethernet. Use USB-Ethernet (Realtek/Intel) or a dock.", 13, 10, 0
+msg_eth_unsup db "PCI: Unsupported Ethernet vendor 0x", 0
 msg_pci_done db "PCI: Bus scan complete.", 13, 10, 0
 pci_newline db 13, 10, 0

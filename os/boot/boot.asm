@@ -419,9 +419,22 @@ uefi_main:
 
 ; Helpers
 %define SYSTEM_TABLE_CON_IN         48
+%define SIMPLE_TEXT_INPUT_RESET     0
 %define SIMPLE_TEXT_INPUT_READ      8
+; Boot Services: ExitBootServices@0xE8, Stall@0xF8 (Hdr=24, then 8-byte slots)
 %define BOOT_SERVICES_STALL         248
-%define EFI_NOT_READY               0x8000000000000006
+
+; RCX = microseconds. Uses MS x64 ABI (16-byte aligned rsp + 32-byte shadow).
+uefi_stall:
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    sub rsp, 32
+    mov rax, [system_table]
+    mov rax, [rax + SYSTEM_TABLE_BOOT_SERVICES]
+    call [rax + BOOT_SERVICES_STALL]
+    leave
+    ret
 
 ; Prompt for SSID/password using EFI ConIn before ExitBootServices.
 ; 8s timeout on first SSID key; empty/skip leaves creds_valid=0 (QEMU-safe).
@@ -431,7 +444,9 @@ uefi_wifi_prompt:
     push rbx
     push rsi
     push rdi
-    sub rsp, 64
+    push r12
+    ; 4 pushes after rbp keep rsp 16-byte aligned (entry was 8-mod-16 from CALL)
+    sub rsp, 32                     ; shadow for any nested calls
 
     mov byte [boot_info + 177], 0   ; creds_valid = 0
     lea rdi, [boot_info + 80]       ; ssid
@@ -442,6 +457,13 @@ uefi_wifi_prompt:
     mov ecx, 64
     rep stosb
 
+    ; No ConIn -> skip (do not call ReadKeyStroke)
+    mov rax, [system_table]
+    mov rax, [rax + SYSTEM_TABLE_CON_IN]
+    test rax, rax
+    jz .skip_no_conin
+    mov r12, rax                    ; ConIn
+
     mov rdx, [system_table]
     mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
     lea rdx, [msg_wifi_banner]
@@ -451,27 +473,25 @@ uefi_wifi_prompt:
     lea rdx, [msg_wifi_ssid]
     call uefi_print
 
+    ; Best-effort reset so ReadKeyStroke is sane on vendor firmware
+    mov rcx, r12
+    xor edx, edx                    ; ExtendedVerification = FALSE
+    mov rax, [r12 + SIMPLE_TEXT_INPUT_RESET]
+    call rax
+
     ; Wait up to ~8s for first key
     mov ebx, 8000
 .wait_first:
     call uefi_try_key
     test rax, rax
     jnz .got_first
-    mov rax, [system_table]
-    mov rax, [rax + SYSTEM_TABLE_BOOT_SERVICES]
     mov rcx, 1000                   ; 1ms
-    call [rax + BOOT_SERVICES_STALL]
+    call uefi_stall
     dec ebx
     jnz .wait_first
-    ; timeout ??? skip WiFi setup
-    mov rdx, [system_table]
-    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
-    lea rdx, [msg_wifi_skip]
-    call uefi_print
-    jmp .done
+    jmp .skip_timeout
 
 .got_first:
-    ; AL = unicode low byte already in [uefi_key_unicode]
     lea rdi, [boot_info + 80]
     xor ebx, ebx                    ; length
     movzx eax, word [uefi_key_unicode]
@@ -521,7 +541,6 @@ uefi_wifi_prompt:
     test ebx, ebx
     jz .done
 
-    ; Password
     mov rdx, [system_table]
     mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
     lea rdx, [msg_wifi_psk]
@@ -544,7 +563,6 @@ uefi_wifi_prompt:
     jae .psk_loop
     mov [rdi + rbx], al
     inc ebx
-    ; echo '*'
     mov rdx, [system_table]
     mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
     lea rdx, [msg_star]
@@ -562,15 +580,24 @@ uefi_wifi_prompt:
 .psk_done:
     mov byte [rdi + rbx], 0
     call uefi_echo_nl
-    mov byte [boot_info + 177], 1   ; creds_valid
+    mov byte [boot_info + 177], 1
 
     mov rdx, [system_table]
     mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
     lea rdx, [msg_wifi_ok]
     call uefi_print
+    jmp .done
+
+.skip_no_conin:
+.skip_timeout:
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_wifi_skip]
+    call uefi_print
 
 .done:
-    add rsp, 64
+    add rsp, 32
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -579,7 +606,9 @@ uefi_wifi_prompt:
 
 ; Returns RAX=1 if key available, unicode in uefi_key_unicode
 uefi_try_key:
-    push rbx
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
     sub rsp, 32
     mov rax, [system_table]
     mov rcx, [rax + SYSTEM_TABLE_CON_IN]
@@ -588,38 +617,33 @@ uefi_try_key:
     lea rdx, [uefi_input_key]
     mov rax, [rcx + SIMPLE_TEXT_INPUT_READ]
     call rax
-    cmp rax, 0
-    jne .none
-    mov ax, [uefi_input_key + 2]    ; UnicodeChar
+    test rax, rax
+    jnz .none
+    mov ax, [uefi_input_key + 2]
     mov [uefi_key_unicode], ax
     mov rax, 1
     jmp .out
 .none:
     xor rax, rax
 .out:
-    add rsp, 32
-    pop rbx
+    leave
     ret
 
 uefi_wait_key:
-    push rbx
+    push rbp
+    mov rbp, rsp
 .wait:
     call uefi_try_key
     test rax, rax
     jnz .got
-    mov rax, [system_table]
-    mov rax, [rax + SYSTEM_TABLE_BOOT_SERVICES]
     mov rcx, 1000
-    sub rsp, 32
-    call [rax + BOOT_SERVICES_STALL]
-    add rsp, 32
+    call uefi_stall
     jmp .wait
 .got:
-    pop rbx
+    pop rbp
     ret
 
 uefi_echo_char:
-    ; echo last unicode as one-char UTF-16 string
     mov ax, [uefi_key_unicode]
     mov [msg_onechar], ax
     mov word [msg_onechar + 2], 0
@@ -644,11 +668,16 @@ uefi_print:
     ; RCX = ConOut, RDX = UTF-16 String
     push rbp
     mov rbp, rsp
+    and rsp, -16
     sub rsp, 32
+    test rcx, rcx
+    jz .out
     mov rax, [rcx + SIMPLE_TEXT_OUTPUT_STRING]
+    test rax, rax
+    jz .out
     call rax
-    add rsp, 32
-    pop rbp
+.out:
+    leave
     ret
 
 ; ==============================================================================

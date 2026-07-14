@@ -16,6 +16,9 @@ global dhcp_is_bound
 extern udp_send
 extern wifi_get_mac
 extern wifi_recv_packet
+extern wifi_is_loopback
+extern wifi_needs_association
+extern wifi_is_associated
 extern net_handle_packet
 extern con_puts
 extern con_put_dec
@@ -63,7 +66,25 @@ dhcp_init:
     lea rcx, [msg_dhcp_start]
     call serial_puts
 
-    ; Start discover sequence
+    ; No external NIC: skip discover wait and bind loopback address
+    call wifi_is_loopback
+    test rax, rax
+    jnz .loopback_bind
+
+    ; Wireless not associated yet: do not spam Discover
+    call wifi_needs_association
+    test rax, rax
+    jz .start_discover
+    call wifi_is_associated
+    test rax, rax
+    jnz .start_discover
+    lea rcx, [msg_dhcp_no_assoc]
+    call con_puts
+    lea rcx, [msg_dhcp_no_assoc]
+    call serial_puts
+    jmp .fallback
+
+.start_discover:
     call dhcp_send_discover
 
     ; We block for up to 3 seconds for DHCP to bind, or fallback to static IP
@@ -79,7 +100,7 @@ dhcp_init:
     cmp rax, rbx
     jae .fallback
 
-    ; Must pump RX or DHCP replies / ARP never arrive
+    ; Pump RX so OFFER/ACK can arrive under polling drivers (e1000/QEMU)
     lea rcx, [dhcp_rx_buf]
     call wifi_recv_packet
     test rax, rax
@@ -91,6 +112,18 @@ dhcp_init:
     mov rcx, 10
     call sleep_ms
     jmp .poll_loop
+
+.loopback_bind:
+    mov dword [our_ip], 0x0100007F      ; 127.0.0.1
+    mov dword [gateway_ip], 0x0100007F
+    mov dword [subnet_mask], 0x000000FF ; 255.0.0.0
+    mov byte [dhcp_state], STATE_BOUND
+    lea rcx, [msg_dhcp_loopback]
+    call con_puts
+    lea rcx, [msg_dhcp_loopback]
+    call serial_puts
+    call dhcp_print_config
+    jmp .done
 
 .fallback:
     ; QEMU user-networking default guest address (hostfwd targets this)
@@ -501,6 +534,8 @@ dhcp_state db STATE_INIT
 msg_dhcp_start db "DHCP: Requesting IP address (discovering)...", 13, 10, 0
 msg_dhcp_bound db "DHCP: Lease bound successfully!", 13, 10, 0
 msg_dhcp_timeout db "DHCP: Request timeout. Using fallback static IP.", 13, 10, 0
+msg_dhcp_loopback db "DHCP: Loopback only — bound 127.0.0.1 (no external NIC).", 13, 10, 0
+msg_dhcp_no_assoc db "DHCP: WiFi not associated; using fallback IP.", 13, 10, 0
 msg_ip db "  IP Address:  ", 0
 msg_mask db "  Subnet Mask: ", 0
 msg_gw db "  Gateway IP:  ", 0

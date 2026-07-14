@@ -13,11 +13,12 @@ global pci_get_wifi_device
 global pci_get_netdev
 
 ; Driver type IDs (must match netdev.asm)
-NETDEV_NONE     equ 0
-NETDEV_LOOPBACK equ 1
-NETDEV_IWLWIFI  equ 2
-NETDEV_E1000    equ 3
-NETDEV_VIRTIO   equ 4
+NETDEV_NONE         equ 0
+NETDEV_LOOPBACK     equ 1
+NETDEV_IWLWIFI      equ 2
+NETDEV_E1000        equ 3
+NETDEV_VIRTIO       equ 4
+NETDEV_GENERIC_WIFI equ 5
 
 extern con_puts
 extern con_put_hex
@@ -234,8 +235,21 @@ pci_init:
     ; Match against network device table
     call pci_lookup_netdev
     test eax, eax
-    jz .next_func
+    jnz .have_type
 
+    ; Unknown ID: class-code fallback (Network controller)
+    ; Class/subclass at config +0x08 bits 31:16 → class:subclass
+    mov rcx, r12
+    mov rdx, r13
+    mov r8, r14
+    mov r9, 0x08
+    call pci_read_config
+    shr eax, 16
+    cmp ax, 0x0280                  ; Network / Other (common WiFi class)
+    jne .next_func
+    mov eax, NETDEV_GENERIC_WIFI
+
+.have_type:
     ; Prefer Ethernet (e1000/virtio) over WiFi for first bind if none yet;
     ; if e1000 found later while only iwl claimed, upgrade.
     cmp dword [netdev_type], NETDEV_NONE
@@ -260,7 +274,10 @@ pci_init:
     mov [netdev_bdf], eax
 
     cmp dword [netdev_type], NETDEV_IWLWIFI
+    je .mark_wifi
+    cmp dword [netdev_type], NETDEV_GENERIC_WIFI
     jne .announce
+.mark_wifi:
     mov byte [wifi_found], 1
     mov [wifi_reg_base], rax
     mov [wifi_bus], r12d

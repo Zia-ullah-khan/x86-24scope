@@ -22,6 +22,9 @@ extern fat32_init
 extern wifi_init
 extern arp_init
 extern dhcp_init
+extern wifi_try_connect
+extern wifi_needs_association
+extern wifi_is_associated
 extern wifi_recv_packet
 extern net_handle_packet
 extern http_server_start
@@ -107,8 +110,24 @@ kernel_main:
     ; 15. Initialize ARP Table
     call arp_init
 
+    ; 15b. Associate WiFi before DHCP when a wireless backend is active
+    call wifi_needs_association
+    test rax, rax
+    jz .dhcp
+    call wifi_try_connect
+    test rax, rax
+    jnz .dhcp
+    lea rcx, [msg_wifi_skip_dhcp]
+    call con_puts
+    lea rcx, [msg_wifi_skip_dhcp]
+    call serial_puts
+    jmp .after_dhcp
+
+.dhcp:
     ; 16. Start DHCP Configuration
     call dhcp_init
+
+.after_dhcp:
 
     ; 17. Initialize TUI Dashboard Layout
     call tui_init
@@ -148,6 +167,7 @@ kernel_main:
 section .data
 
 align 8
+global boot_info_ptr
 boot_info_ptr dq 0
 
 msg_serial_init db "Serial debug port initialized at COM1 (115200 8N1)", 13, 10, 0
@@ -158,6 +178,7 @@ msg_banner db "--------------------------------------------------------", 13, 10
            db " x86-24scope Bare-Metal OS - Phase 1 Boot Successful!  ", 13, 10
            db "--------------------------------------------------------", 13, 10, 0
 msg_idle   db "System idle. Halting CPU...", 13, 10, 0
+msg_wifi_skip_dhcp db "WiFi: Not associated; skipping DHCP until connect succeeds.", 13, 10, 0
 
 section .bss
 

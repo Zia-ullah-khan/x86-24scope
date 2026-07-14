@@ -159,7 +159,7 @@ uefi_main:
     mov [disk_size_bytes], rax
 
     ; Cap RAM disk copy. Need enough of efi_part.img that static assets
-    ; (Plane Icons, maps) are reachable — those currently sit ~160MB+ in.
+    ; (Plane Icons, maps) are reachable ??? those currently sit ~160MB+ in.
     ; Also enforce a minimum so tiny El Torito windows still get a FAT BPB.
     mov r8, 2 * 1024 * 1024                 ; 2MB minimum
     cmp rax, r8
@@ -313,6 +313,9 @@ uefi_main:
     lea rdx, [dbg_acpi_done]
     call uefi_print
 
+    ; --- WiFi credentials via UEFI keyboard (works on USB laptop keyboards) ---
+    call uefi_wifi_prompt
+
     ; Get System Memory Map
     mov rax, [system_table]
     mov rax, [rax + SYSTEM_TABLE_BOOT_SERVICES]
@@ -415,6 +418,228 @@ uefi_main:
     jmp .halt
 
 ; Helpers
+%define SYSTEM_TABLE_CON_IN         48
+%define SIMPLE_TEXT_INPUT_READ      8
+%define BOOT_SERVICES_STALL         248
+%define EFI_NOT_READY               0x8000000000000006
+
+; Prompt for SSID/password using EFI ConIn before ExitBootServices.
+; 8s timeout on first SSID key; empty/skip leaves creds_valid=0 (QEMU-safe).
+uefi_wifi_prompt:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 64
+
+    mov byte [boot_info + 177], 0   ; creds_valid = 0
+    lea rdi, [boot_info + 80]       ; ssid
+    xor eax, eax
+    mov ecx, 33
+    rep stosb
+    lea rdi, [boot_info + 113]      ; psk
+    mov ecx, 64
+    rep stosb
+
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_wifi_banner]
+    call uefi_print
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_wifi_ssid]
+    call uefi_print
+
+    ; Wait up to ~8s for first key
+    mov ebx, 8000
+.wait_first:
+    call uefi_try_key
+    test rax, rax
+    jnz .got_first
+    mov rax, [system_table]
+    mov rax, [rax + SYSTEM_TABLE_BOOT_SERVICES]
+    mov rcx, 1000                   ; 1ms
+    call [rax + BOOT_SERVICES_STALL]
+    dec ebx
+    jnz .wait_first
+    ; timeout ??? skip WiFi setup
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_wifi_skip]
+    call uefi_print
+    jmp .done
+
+.got_first:
+    ; AL = unicode low byte already in [uefi_key_unicode]
+    lea rdi, [boot_info + 80]
+    xor ebx, ebx                    ; length
+    movzx eax, word [uefi_key_unicode]
+    cmp ax, 13
+    je .ssid_done_empty
+    cmp ax, 10
+    je .ssid_done_empty
+    cmp ax, 8
+    je .ssid_read_loop
+    cmp ax, 32
+    jb .ssid_read_loop
+    mov [rdi + rbx], al
+    inc ebx
+    call uefi_echo_char
+
+.ssid_read_loop:
+    call uefi_wait_key
+    movzx eax, word [uefi_key_unicode]
+    cmp ax, 13
+    je .ssid_done
+    cmp ax, 10
+    je .ssid_done
+    cmp ax, 8
+    je .ssid_bs
+    cmp ax, 32
+    jb .ssid_read_loop
+    cmp ebx, 32
+    jae .ssid_read_loop
+    mov [rdi + rbx], al
+    inc ebx
+    call uefi_echo_char
+    jmp .ssid_read_loop
+
+.ssid_bs:
+    test ebx, ebx
+    jz .ssid_read_loop
+    dec ebx
+    mov byte [rdi + rbx], 0
+    call uefi_echo_bs
+    jmp .ssid_read_loop
+
+.ssid_done_empty:
+    xor ebx, ebx
+.ssid_done:
+    mov byte [rdi + rbx], 0
+    call uefi_echo_nl
+    test ebx, ebx
+    jz .done
+
+    ; Password
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_wifi_psk]
+    call uefi_print
+
+    lea rdi, [boot_info + 113]
+    xor ebx, ebx
+.psk_loop:
+    call uefi_wait_key
+    movzx eax, word [uefi_key_unicode]
+    cmp ax, 13
+    je .psk_done
+    cmp ax, 10
+    je .psk_done
+    cmp ax, 8
+    je .psk_bs
+    cmp ax, 32
+    jb .psk_loop
+    cmp ebx, 63
+    jae .psk_loop
+    mov [rdi + rbx], al
+    inc ebx
+    ; echo '*'
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_star]
+    call uefi_print
+    jmp .psk_loop
+
+.psk_bs:
+    test ebx, ebx
+    jz .psk_loop
+    dec ebx
+    mov byte [rdi + rbx], 0
+    call uefi_echo_bs
+    jmp .psk_loop
+
+.psk_done:
+    mov byte [rdi + rbx], 0
+    call uefi_echo_nl
+    mov byte [boot_info + 177], 1   ; creds_valid
+
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_wifi_ok]
+    call uefi_print
+
+.done:
+    add rsp, 64
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; Returns RAX=1 if key available, unicode in uefi_key_unicode
+uefi_try_key:
+    push rbx
+    sub rsp, 32
+    mov rax, [system_table]
+    mov rcx, [rax + SYSTEM_TABLE_CON_IN]
+    test rcx, rcx
+    jz .none
+    lea rdx, [uefi_input_key]
+    mov rax, [rcx + SIMPLE_TEXT_INPUT_READ]
+    call rax
+    cmp rax, 0
+    jne .none
+    mov ax, [uefi_input_key + 2]    ; UnicodeChar
+    mov [uefi_key_unicode], ax
+    mov rax, 1
+    jmp .out
+.none:
+    xor rax, rax
+.out:
+    add rsp, 32
+    pop rbx
+    ret
+
+uefi_wait_key:
+    push rbx
+.wait:
+    call uefi_try_key
+    test rax, rax
+    jnz .got
+    mov rax, [system_table]
+    mov rax, [rax + SYSTEM_TABLE_BOOT_SERVICES]
+    mov rcx, 1000
+    sub rsp, 32
+    call [rax + BOOT_SERVICES_STALL]
+    add rsp, 32
+    jmp .wait
+.got:
+    pop rbx
+    ret
+
+uefi_echo_char:
+    ; echo last unicode as one-char UTF-16 string
+    mov ax, [uefi_key_unicode]
+    mov [msg_onechar], ax
+    mov word [msg_onechar + 2], 0
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_onechar]
+    jmp uefi_print
+
+uefi_echo_bs:
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_bs]
+    jmp uefi_print
+
+uefi_echo_nl:
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [msg_crlf]
+    jmp uefi_print
+
 uefi_print:
     ; RCX = ConOut, RDX = UTF-16 String
     push rbp
@@ -472,6 +697,30 @@ dbg_acpi_done:
 dbg_exit_bs:
     dw '[', '5', ']', ' ', 'E', 'x', 'i', 't', 'i', 'n', 'g', ' ', 'B', 'S', '.', '.', '.', 13, 10, 0
 
+msg_wifi_banner:
+    dw 13, 10, 'W', 'i', 'F', 'i', ' ', 's', 'e', 't', 'u', 'p', ' ', '(', 'U', 'E', 'F', 'I', ' ', 'k', 'e', 'y', 'b', 'o', 'a', 'r', 'd', ')', 13, 10, 0
+msg_wifi_ssid:
+    dw 'S', 'S', 'I', 'D', ' ', '(', 'E', 'n', 't', 'e', 'r', '=', 's', 'k', 'i', 'p', ',', ' ', '8', 's', ')', ':', ' ', 0
+msg_wifi_psk:
+    dw 'P', 'a', 's', 's', 'w', 'o', 'r', 'd', ':', ' ', 0
+msg_wifi_skip:
+    dw '(', 'n', 'o', ' ', 'S', 'S', 'I', 'D', ' ', '-', ' ', 's', 'k', 'i', 'p', 'p', 'i', 'n', 'g', ' ', 'W', 'i', 'F', 'i', ' ', 's', 'e', 't', 'u', 'p', ')', 13, 10, 0
+msg_wifi_ok:
+    dw 'W', 'i', 'F', 'i', ' ', 'c', 'r', 'e', 'd', 'e', 'n', 't', 'i', 'a', 'l', 's', ' ', 's', 'a', 'v', 'e', 'd', '.', 13, 10, 0
+msg_star:
+    dw '*', 0
+msg_bs:
+    dw 8, ' ', 8, 0
+msg_crlf:
+    dw 13, 10, 0
+msg_onechar:
+    dw 0, 0
+align 8
+uefi_input_key:
+    dw 0, 0
+uefi_key_unicode:
+    dw 0
+
 ; BootInfo structure passed to kernel:
 ; Offset 0:  Width (4 bytes)
 ; Offset 4:  Height (4 bytes)
@@ -485,6 +734,9 @@ dbg_exit_bs:
 ; Offset 56: RsdpAddress (8 bytes)
 ; Offset 64: DiskBufferBase (8 bytes)
 ; Offset 72: DiskBufferSize (8 bytes)
+; Offset 80: WiFi SSID (33 bytes)
+; Offset 113: WiFi PSK (64 bytes)
+; Offset 177: WiFiCredsValid (1 byte)
 align 16
 boot_info:
     dd 0                            ; Width
@@ -499,6 +751,10 @@ boot_info:
     dq 0                            ; RsdpAddress
     dq 0                            ; DiskBufferBase
     dq 0                            ; DiskBufferSize
+    times 33 db 0                   ; WiFi SSID @80
+    times 64 db 0                   ; WiFi PSK @113
+    db 0                            ; WiFiCredsValid @177
+    times 7 db 0                    ; pad to 16-byte align
 
 ; Loaded Image / Block IO variables
 align 8

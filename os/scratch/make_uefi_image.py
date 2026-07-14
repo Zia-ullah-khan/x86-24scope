@@ -314,14 +314,23 @@ def make_bootable_iso(iso_path, efi_img_path):
     print(f"ISO successfully built: {iso_path} ({len(final_iso)} bytes)")
 
 if __name__ == "__main__":
+    import shutil
+
     # Create iso_root directories
     os.makedirs("iso_root/EFI/BOOT", exist_ok=True)
-    
+    os.makedirs("iso_root/EFI/FIRMWARE", exist_ok=True)
+
     # Copy OS loader
     if os.path.exists("build/BOOTX64.EFI"):
-        import shutil
         shutil.copy2("build/BOOTX64.EFI", "iso_root/EFI/BOOT/BOOTX64.EFI")
-    
+
+    # Copy WiFi firmware blobs
+    if os.path.isdir("firmware"):
+        for name in os.listdir("firmware"):
+            src = os.path.join("firmware", name)
+            if os.path.isfile(src) and not name.endswith(".md"):
+                shutil.copy2(src, os.path.join("iso_root/EFI/FIRMWARE", name))
+
     # Copy static assets
     if os.path.exists("frontend/static"):
         for root, dirs, files in os.walk("frontend/static"):
@@ -331,7 +340,7 @@ if __name__ == "__main__":
                 dst = os.path.join("iso_root", rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
-                
+
     make_fat16_image("build/efi_part.img", "iso_root", size_mb=256)
     iso_path = "build/24scope.iso"
     try:

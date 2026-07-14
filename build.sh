@@ -5,6 +5,11 @@ set -e
 OS="$(uname -s)"
 echo "Detected OS: $OS"
 
+if [ -d "build" ]; then
+    rm -r build/
+    echo "Cleared build directory"
+fi
+
 if [ "$OS" = "Linux" ]; then
     ASM_FORMAT="elf64"
     ASM_DEFINE="-DLINUX"

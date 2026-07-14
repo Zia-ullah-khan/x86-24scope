@@ -1,604 +1,649 @@
 <!DOCTYPE html>
 <html>
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>24Scope Radar</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<style>
-:root{color-scheme:dark;--bg:#0a0e17;--panel:rgba(10,16,28,.92);--text:#e8f0ff;--muted:#8aa0b8;--cyan:#06b6d4;--border:rgba(122,161,196,.22)}
-*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Segoe UI,IBM Plex Sans,sans-serif}
-#app{display:flex;flex-direction:column;height:100%}
-.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(12,20,34,.98),rgba(8,12,22,.96))}
-.eyebrow{margin:0;color:var(--cyan);text-transform:uppercase;letter-spacing:.2em;font-size:.7rem;font-weight:700}
-.topbar h1{margin:2px 0 0;font-size:1.35rem;letter-spacing:-.03em}
-.topbar-right{display:flex;align-items:center;gap:12px}
-.pill{padding:6px 12px;border-radius:999px;border:1px solid rgba(6,182,212,.35);background:rgba(6,182,212,.12);color:#b8f4ff;font-size:.85rem;font-weight:600}
-.home-link{color:var(--muted);text-decoration:none;font-size:.9rem}
-#map-wrap{position:relative;flex:1;min-height:0}#map{width:100%;height:100%;background-color:#0a0e17 !important}
-.toolbar{position:absolute;top:12px;left:12px;z-index:1000;display:flex;flex-direction:column;gap:6px}
-.tool{padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:#1a2332;color:#a8bad0;font-size:12px;font-weight:600;cursor:pointer}
-.tool.active{background:var(--cyan);color:#0a0e17;border-color:var(--cyan)}
-.tool.measure-on{background:#f472b6;color:#0a0e17;border-color:#f472b6}
-.measure-bar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:1000;display:flex;align-items:center;gap:16px;padding:8px 16px;border:1px solid #f472b6;border-radius:10px;background:rgba(12,18,30,.94);font-size:13px;font-weight:600;box-shadow:0 4px 24px rgba(0,0,0,.5)}
-.hidden{display:none!important}
-#measure-dist{color:#f472b6}#measure-brg{color:var(--muted)}
-#btn-measure-clear{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px}
-.selected-panel{position:absolute;top:12px;right:12px;z-index:1000;min-width:180px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel);box-shadow:0 8px 32px rgba(0,0,0,.45)}
-.sel-callsign{font-size:1.05rem;font-weight:700;color:#22c55e}
-.sel-meta{margin-top:6px;color:var(--muted);font-size:.85rem;line-height:1.45}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>24Scope Radar</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0e17;
+      --panel: rgba(10, 16, 28, .92);
+      --text: #e8f0ff;
+      --muted: #8aa0b8;
+      --cyan: #06b6d4;
+      --border: rgba(122, 161, 196, .22)
+    }
 
-/* Leaflet specific overrides */
-.leaflet-container {
-  background: #0a0e17 !important;
-}
-.leaflet-control-attribution {
-  display: none !important;
-}
-.leaflet-tooltip-bottom::before {
-  border-bottom-color: transparent !important;
-}
-.leaflet-tooltip {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-  margin: 0 !important;
-}
-.wp-label {
-  color: #546e7a !important;
-  font-family: 'Noto Sans Regular', sans-serif;
-  font-size: 9px !important;
-  text-shadow: -1px -1px 0 #0a0e17, 1px -1px 0 #0a0e17, -1px 1px 0 #0a0e17, 1px 1px 0 #0a0e17;
-  pointer-events: none;
-}
-.vortac-label {
-  color: #66bb6a !important;
-  font-family: 'Noto Sans Regular', sans-serif;
-  font-size: 9px !important;
-  text-shadow: -1px -1px 0 #0a0e17, 1px -1px 0 #0a0e17, -1px 1px 0 #0a0e17, 1px 1px 0 #0a0e17;
-  pointer-events: none;
-}
-.airport-label {
-  color: #4fc3f7 !important;
-  font-family: 'Noto Sans Regular', sans-serif;
-  font-size: 11px !important;
-  text-align: center;
-  text-shadow: -2px -2px 0 #0a0e17, 2px -2px 0 #0a0e17, -2px 2px 0 #0a0e17, 2px 2px 0 #0a0e17;
-  pointer-events: none;
-}
-.aircraft-label {
-  color: #94a3b8 !important;
-  font-family: 'Noto Sans Regular', sans-serif;
-  font-size: 10px !important;
-  text-shadow: -1px -1px 0 #0a0e17, 1px -1px 0 #0a0e17, -1px 1px 0 #0a0e17, 1px 1px 0 #0a0e17;
-  pointer-events: none;
-}
-.aircraft-label.selected {
-  color: #22c55e !important;
-}
-.aircraft-div-icon {
-  background: transparent !important;
-  border: none !important;
-}
-</style>
+    * {
+      box-sizing: border-box
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Segoe UI, IBM Plex Sans, sans-serif
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100%
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(12, 20, 34, .98), rgba(8, 12, 22, .96))
+    }
+
+    .eyebrow {
+      margin: 0;
+      color: var(--cyan);
+      text-transform: uppercase;
+      letter-spacing: .2em;
+      font-size: .7rem;
+      font-weight: 700
+    }
+
+    .topbar h1 {
+      margin: 2px 0 0;
+      font-size: 1.35rem;
+      letter-spacing: -.03em
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 12px
+    }
+
+    .pill {
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(6, 182, 212, .35);
+      background: rgba(6, 182, 212, .12);
+      color: #b8f4ff;
+      font-size: .85rem;
+      font-weight: 600
+    }
+
+    .home-link {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .9rem
+    }
+
+    #map-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 0
+    }
+
+    #map {
+      width: 100%;
+      height: 100%
+    }
+
+    .toolbar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 6px
+    }
+
+    .tool {
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #1a2332;
+      color: #a8bad0;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer
+    }
+
+    .tool.active {
+      background: var(--cyan);
+      color: #0a0e17;
+      border-color: var(--cyan)
+    }
+
+    .tool.measure-on {
+      background: #f472b6;
+      color: #0a0e17;
+      border-color: #f472b6
+    }
+
+    .measure-bar {
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 16px;
+      border: 1px solid #f472b6;
+      border-radius: 10px;
+      background: rgba(12, 18, 30, .94);
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, .5)
+    }
+
+    .hidden {
+      display: none !important
+    }
+
+    #measure-dist {
+      color: #f472b6
+    }
+
+    #measure-brg {
+      color: var(--muted)
+    }
+
+    #btn-measure-clear {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px
+    }
+
+    .selected-panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 10;
+      min-width: 180px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, .45)
+    }
+
+    .sel-callsign {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #22c55e
+    }
+
+    .sel-meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: .85rem;
+      line-height: 1.45
+    }
+  </style>
 </head>
+
 <body>
-<div id="app">
-<header class="topbar">
-<div><p class="eyebrow">24Scope</p><h1>Radar Map</h1></div>
-<div class="topbar-right"><span id="ac-count" class="pill">0 tracks</span><a class="home-link" href="/">Home</a></div>
-</header>
-<div id="map-wrap">
-<div id="map"></div>
-<div class="toolbar">
-<button type="button" id="btn-labels" class="tool active">Fixes ON</button>
-<button type="button" id="btn-measure" class="tool">Measure</button>
-</div>
-<div id="measure-bar" class="measure-bar hidden"><span id="measure-dist"></span><span id="measure-brg"></span><button type="button" id="btn-measure-clear">Clear</button></div>
-<div id="selected" class="selected-panel hidden"><div class="sel-callsign" id="sel-cs"></div><div class="sel-meta" id="sel-meta"></div></div>
-</div>
-</div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">24Scope</p>
+        <h1>Radar Map</h1>
+      </div>
+      <div class="topbar-right"><span id="ac-count" class="pill">0 tracks</span><a class="home-link" href="/">Home</a>
+      </div>
+    </header>
+    <div id="map-wrap">
+      <div id="map"></div>
+      <div class="toolbar">
+        <button type="button" id="btn-labels" class="tool active">Fixes ON</button>
+        <button type="button" id="btn-measure" class="tool">Measure</button>
+      </div>
+      <div id="measure-bar" class="measure-bar hidden"><span id="measure-dist"></span><span
+          id="measure-brg"></span><button type="button" id="btn-measure-clear">Clear</button></div>
+      <div id="selected" class="selected-panel hidden">
+        <div class="sel-callsign" id="sel-cs"></div>
+        <div class="sel-meta" id="sel-meta"></div>
+      </div>
+    </div>
+  </div>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
 
-const STUDS_TO_METERS = 1852 / 3307.14286;
-const STUDS_PER_SEC = 0.5442765;
-const DEG_TO_RAD = Math.PI / 180;
-const AIRPORTS = [{"icao":"IRFD","name":"Greater Rockford","region":"Rockford","x":-2925,"y":20082,"hasILS":true},{"icao":"IGAR","name":"Air Base Garry","region":"Rockford","x":-16272,"y":23655,"hasILS":false},{"icao":"IBLT","name":"Boltic Airfield","region":"Rockford","x":-11226,"y":17466,"hasILS":false},{"icao":"IMLR","name":"Mellor","region":"Rockford","x":-19365,"y":14766,"hasILS":true},{"icao":"ITRC","name":"Training Centre","region":"Rockford","x":-1995,"y":30057,"hasILS":true},{"icao":"ILAR","name":"Larnaca","region":"Cyprus","x":21330,"y":32406,"hasILS":true},{"icao":"IPAP","name":"Paphos","region":"Cyprus","x":31731,"y":34272,"hasILS":true},{"icao":"IIAB","name":"McConnell AFB","region":"Cyprus","x":23220,"y":40350,"hasILS":false},{"icao":"IGRV","name":"Grindavik","region":"Grindavik","x":-43158,"y":-2757,"hasILS":true},{"icao":"IPPH","name":"Perth","region":"Perth","x":18105,"y":-20409,"hasILS":true},{"icao":"ILKL","name":"Lukla","region":"Perth","x":22623,"y":-16512,"hasILS":false},{"icao":"ITKO","name":"Tokyo","region":"Orenji","x":-7368,"y":-31953,"hasILS":true},{"icao":"IDCS","name":"Saba","region":"Orenji","x":-4854,"y":-44892,"hasILS":false},{"icao":"IZOL","name":"Izolirani","region":"Izolirani","x":44772,"y":3420,"hasILS":true},{"icao":"IJAF","name":"Al Najaf","region":"Izolirani","x":46182,"y":222,"hasILS":true},{"icao":"ISCM","name":"RAF Scampton","region":"Izolirani","x":36111,"y":-5001,"hasILS":false},{"icao":"IBTH","name":"Saint Barthelemy","region":"SaintBarthelemy","x":5778,"y":-4509,"hasILS":false},{"icao":"ISAU","name":"Sauthemptona","region":"Sauthemptona","x":-46056,"y":27501,"hasILS":false}];
-const WAYPOINTS = [{"name":"SHELL","x":-26493,"y":-40395},{"name":"NIKON","x":-12240,"y":-42360},{"name":"CHILY","x":3315,"y":-40650},{"name":"SHIBA","x":-18480,"y":-37746},{"name":"LETSE","x":-4908,"y":-35184},{"name":"HONDA","x":6171,"y":-35220},{"name":"ASTRO","x":-15771,"y":-30717},{"name":"GULEG","x":-22233,"y":-25842},{"name":"PIPER","x":-13644,"y":-25113},{"name":"ONDER","x":-5997,"y":-23073},{"name":"KNIFE","x":1062,"y":-24798},{"name":"TUDEP","x":-16383,"y":-18261},{"name":"ALLRY","x":6009,"y":-18204},{"name":"CRAZY","x":18213,"y":-35193},{"name":"WOTAN","x":33834,"y":-33351},{"name":"WAGON","x":43389,"y":-30123},{"name":"WELLS","x":24522,"y":-26283},{"name":"SQUID","x":36015,"y":-26115},{"name":"ZESTA","x":46035,"y":-23397},{"name":"TINDR","x":10191,"y":-22410},{"name":"NOONU","x":28935,"y":-19086},{"name":"KELLA","x":33924,"y":-18804},{"name":"STRAX","x":11907,"y":-17349},{"name":"TALIS","x":25524,"y":-11688},{"name":"SISTA","x":31983,"y":-12702},{"name":"UDMUG","x":50277,"y":-14061},{"name":"ROSMO","x":39513,"y":-9591},{"name":"LLIME","x":53373,"y":-8349},{"name":"CAMEL","x":21027,"y":-6321},{"name":"DUNKS","x":28113,"y":-5961},{"name":"MORRD","x":50298,"y":-1980},{"name":"CYRIL","x":26388,"y":438},{"name":"DOGGO","x":35742,"y":7254},{"name":"ABSRS","x":54840,"y":6690},{"name":"BILLO","x":46824,"y":11157},{"name":"JUSTY","x":38118,"y":16035},{"name":"CHAIN","x":54840,"y":18969},{"name":"RENTS","x":25209,"y":22182},{"name":"GRASS","x":17583,"y":25671},{"name":"JACKI","x":33678,"y":29502},{"name":"DEBUG","x":46734,"y":29505},{"name":"BOBUX","x":39423,"y":35382},{"name":"NUBER","x":54747,"y":36882},{"name":"AQWRT","x":14826,"y":36321},{"name":"FORIA","x":6009,"y":42165},{"name":"MUONE","x":38181,"y":42195},{"name":"JAZZR","x":46638,"y":42240},{"name":"FORCE","x":20460,"y":48891},{"name":"MASEV","x":29235,"y":48891},{"name":"ALTRS","x":35931,"y":48891},{"name":"CAWZE","x":18669,"y":7617},{"name":"ANYMS","x":14163,"y":18333},{"name":"GERLD","x":-16539,"y":-15387},{"name":"RENDR","x":-12456,"y":-14379},{"name":"JOOPY","x":-2937,"y":-15414},{"name":"PROBE","x":-8403,"y":-10497},{"name":"DINER","x":3075,"y":-9945},{"name":"WELSH","x":-12498,"y":-4509},{"name":"INDEX","x":-7029,"y":-699},{"name":"GAVIN","x":5388,"y":1389},{"name":"SILVA","x":16503,"y":1575},{"name":"OCEEN","x":10668,"y":5256},{"name":"ENDER","x":-20991,"y":684},{"name":"SUNST","x":-26238,"y":5082},{"name":"KENED","x":-12495,"y":3669},{"name":"SETHR","x":2337,"y":7653},{"name":"BUCFA","x":-20472,"y":8718},{"name":"KUNAV","x":-12447,"y":9489},{"name":"SAWPE","x":-28527,"y":10803},{"name":"ICTAM","x":-14313,"y":12456},{"name":"HAWFA","x":-8880,"y":11496},{"name":"QUEEN","x":-3297,"y":15606},{"name":"BEANS","x":-28017,"y":18990},{"name":"LOGAN","x":-21063,"y":20553},{"name":"LAVNO","x":1188,"y":17634},{"name":"ATPEV","x":4266,"y":16389},{"name":"JAMSI","x":7689,"y":22431},{"name":"MOGTA","x":-12255,"y":23361},{"name":"EXMOR","x":-19848,"y":26751},{"name":"PEPUL","x":-9489,"y":28836},{"name":"GODLU","x":2301,"y":27399},{"name":"LAZER","x":6984,"y":29328},{"name":"EMJAY","x":-15786,"y":36090},{"name":"ODOKU","x":-4803,"y":36078},{"name":"TRELN","x":-11238,"y":45612},{"name":"REAPR","x":-2412,"y":44034},{"name":"HACKE","x":-54678,"y":20346},{"name":"GEORG","x":-46344,"y":22878},{"name":"SEEKS","x":-37602,"y":25821},{"name":"HECKS","x":-56751,"y":30276},{"name":"PACKT","x":-49680,"y":32220},{"name":"ALDER","x":-28989,"y":33447},{"name":"STACK","x":-40317,"y":35763},{"name":"WASTE","x":-50265,"y":40611},{"name":"HOGGS","x":-30375,"y":39738},{"name":"BULLY","x":-34029,"y":-29853},{"name":"FROOT","x":-40329,"y":-22335},{"name":"EURAD","x":-27699,"y":-20175},{"name":"BOBOS","x":-46806,"y":-16122},{"name":"BLANK","x":-25092,"y":-14322},{"name":"THENR","x":-40452,"y":-12771},{"name":"ACRES","x":-51372,"y":-10767},{"name":"YOUTH","x":-33150,"y":-8859},{"name":"UWAIS","x":-56427,"y":-5775},{"name":"EZYDB","x":-24729,"y":-4431},{"name":"FRANK","x":-55854,"y":1920},{"name":"CELAR","x":-38040,"y":5070},{"name":"THACC","x":-55953,"y":10374},{"name":"SHREK","x":-47022,"y":11247},{"name":"SPACE","x":-37644,"y":13071}];
-const VORTACS = [{"name":"HANEDA","id":"HME","freq":"112.200","x":-8574,"y":-32031},{"name":"CROIS NOOB","id":"COC","freq":"","x":15048,"y":-27387},{"name":"PERTH","id":"PER","freq":"115.430","x":15786,"y":-20832},{"name":"BRAINSTORM","id":"BTM","freq":"","x":23988,"y":-19914},{"name":"ORANGE","id":"ORG","freq":"","x":18495,"y":-15279},{"name":"ROMIES","id":"ROM","freq":"","x":8283,"y":-10806},{"name":"RESURGE","id":"RES","freq":"","x":-864,"y":-4086},{"name":"VONARX","id":"VOX","freq":"","x":10806,"y":-4446},{"name":"HOTDOG","id":"HOT","freq":"","x":35349,"y":-4632},{"name":"TRESIN","id":"TRE","freq":"","x":34905,"y":690},{"name":"AL NAJAF","id":"NJF","freq":"112.450","x":45393,"y":183},{"name":"IZOLIRANI","id":"IZO","freq":"117.530","x":44352,"y":3420},{"name":"DIZZIER","id":"DIZ","freq":"","x":48342,"y":4560},{"name":"DETOX","id":"DET","freq":"","x":46527,"y":17787},{"name":"KINDLE","id":"KIN","freq":"","x":29349,"y":27636},{"name":"LARNACA","id":"LCK","freq":"122.670","x":20712,"y":31773},{"name":"PAPHOS","id":"PFO","freq":"117.900","x":29994,"y":34413},{"name":"CANDLE","id":"CAN","freq":"","x":9366,"y":39216},{"name":"DIRECTOR","id":"DIR","freq":"","x":11997,"y":44199},{"name":"HUNTER","id":"HUT","freq":"","x":29511,"y":39537},{"name":"MELLOR","id":"MLR","freq":"125.700","x":-20286,"y":14640},{"name":"BLANK","id":"BLA","freq":"","x":-8784,"y":14955},{"name":"ROCKFORD","id":"RFD","freq":"115.900","x":-4728,"y":20217},{"name":"GREY","id":"GRY","freq":"","x":-17034,"y":23226},{"name":"TRAINING CENTRE","id":"TRN","freq":"127.730","x":-3423,"y":29943},{"name":"KROTEN","id":"KRT","freq":"","x":-51972,"y":24579},{"name":"SAUTHEMPTONA","id":"SAU","freq":"113.350","x":-46926,"y":27147},{"name":"BARNIE","id":"BAR","freq":"","x":-38961,"y":30273},{"name":"DELIVERY","id":"DEL","freq":"","x":27828,"y":11349},{"name":"CLEARANCE","id":"CLR","freq":"","x":20046,"y":14943},{"name":"GRINDAVIK","id":"GVK","freq":"112.320","x":-44550,"y":-3396},{"name":"GOLDEN","id":"GOL","freq":"","x":-48945,"y":-2394},{"name":"HAWKIN","id":"HAW","freq":"","x":-40545,"y":-6075}];
-const BOUNDARIES = [{"points":[[-26168.786517284512,51531.027315541185],[-26039.63549648512,30737.71296683982],[-34434.4518484453,23117.802739675968],[-34692.75389004407,1937.0353285764468],[-25652.182434086957,-4778.817752991694],[8960.291140148844,4649.20676536358],[11543.31155613659,9040.34147254275],[13609.727888926787,12914.87209652437],[15934.446263315758,22213.745594080257],[17096.80545051025,27767.23948845391],[3794.2503081733503,34095.63950762389],[3923.4013289727372,51143.574253143015],[-26039.63549648512,51143.574253143015],[-26039.63549648512,51143.574253143015]]},{"points":[[-34692.75389004407,18984.970074095574],[-51224.08455236565,13173.174138123144],[-65688.99888189703,11752.512909329884],[-65301.54581949887,51272.7252739424],[-26039.63549648512,51531.027315541185],[-26039.63549648512,51401.87629474179]]},{"points":[[-25523.031413287572,-5166.270815389869],[-20227.839560512693,-16919.013708134116],[-31722.280411658165,-52693.84646956441],[-65559.84786109765,-52822.99749036379],[-65559.84786109765,11494.210867731097],[-65559.84786109765,11494.210867731097]]},{"points":[[-20227.839560512693,-17306.46677053228],[-18548.876290120657,-20406.091269717574],[11155.85849373843,-20406.091269717574],[11155.85849373843,-52822.99749036379],[-31980.582453256942,-52952.14851116318],[-31980.582453256942,-52952.14851116318]]},{"points":[[11285.009514537818,-20535.242290516966],[16321.899325713923,-18856.279020124934],[20325.580970494928,-8395.04633537456],[26008.225885667973,-10590.613688964144],[35436.250404023245,-10978.066751362305],[54033.99739913503,-21439.29943611268],[69402.96887426212,-20922.69535291513],[69144.66683266334,-52693.84646956441],[11026.70747293904,-52822.99749036381],[11026.70747293904,-52822.99749036381]]},{"points":[[20454.731991294302,-7620.140210578233],[26395.678948066117,-2970.703461800287],[23941.80955287776,5294.961869360501],[11672.462576935963,9427.794534940895],[11543.311556136574,9427.794534940895]]},{"points":[[24200.111594476533,4907.508806962338],[32078.32386323916,2582.790432573367],[39569.08306960363,3099.3945157709168],[39569.08306960363,6457.321056554987],[37244.36469521465,8911.190451743347],[37631.817757612815,15239.590470913325],[39181.630007205466,16401.94965810781],[16192.74830491452,22472.047635679017],[16192.74830491452,22472.047635679017]]},{"points":[[39827.3851112024,16531.100678907198],[43960.217776782796,20534.782323688203],[68886.36479106455,25184.21907246615],[69144.66683266332,51531.02731554117],[4052.552349772108,51401.87629474177],[4052.552349772108,51401.87629474177]]}];
-const PLANE_ICON_FILES = ["737","747","A300","A320","A330","A340","A3402","A350","A380","AN-225","B757","B777","B787","C17","Drone","GA","GC","Hele1","Hele2","hotairballon","ISS","Layer 17","PJ","old737","Prop","Prop2","RegionalJet","Satelite","SolarPlane","SuperSonic","flider"];
-const DEFAULT_PLANE_ICON = "plane-GA";
-const AIRCRAFT_TYPE_TO_ICON = {
-  "Boeing 737":"plane-737","Boeing 737 MAX":"plane-737","Boeing 747":"plane-747","Boeing 757":"plane-B757",
-  "Boeing 777":"plane-B777","Boeing 787":"plane-B787","Airbus A300":"plane-A300","Airbus A320":"plane-A320",
-  "Airbus A330":"plane-A330","Airbus A340":"plane-A340","Airbus A350":"plane-A350","Airbus A380":"plane-A380",
-  "Private Jet":"plane-PJ","Helicopter":"plane-Hele1","General Aviation":"plane-GA","Cessna":"plane-GA",
-  "Regional Jet":"plane-RegionalJet","Prop Plane":"plane-Prop","ISS":"plane-ISS"
-};
-
-function projectStudsToLngLat(x, y) {
-  const lat = -(y * STUDS_TO_METERS) / 111111;
-  const lng = (x * STUDS_TO_METERS) / (111111 * Math.cos(lat * (Math.PI / 180)));
-  return [lng, lat];
-}
-
-function projectStudsToLatLng(x, y) {
-  const [lng, lat] = projectStudsToLngLat(x, y);
-  return [lat, lng];
-}
-
-function getPlaneIconName(aircraftType) {
-  if (AIRCRAFT_TYPE_TO_ICON[aircraftType]) return AIRCRAFT_TYPE_TO_ICON[aircraftType];
-  const lower = (aircraftType || "").toLowerCase();
-  if (lower.includes("737")) return "plane-737";
-  if (lower.includes("747")) return "plane-747";
-  if (lower.includes("777")) return "plane-B777";
-  if (lower.includes("787")) return "plane-B787";
-  if (lower.includes("a320") || lower.includes("a319") || lower.includes("a321")) return "plane-A320";
-  if (lower.includes("a330")) return "plane-A330";
-  if (lower.includes("a350")) return "plane-A350";
-  if (lower.includes("a380")) return "plane-A380";
-  if (lower.includes("heli")) return "plane-Hele1";
-  if (lower.includes("private") || lower.includes("business")) return "plane-PJ";
-  return DEFAULT_PLANE_ICON;
-}
-
-function buildSvgIcon(fill) {
-  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\"><path d=\"M12 2L15 10H22L16 14L18 22L12 18L6 22L8 14L2 10H9L12 2Z\" fill=\"" + fill + "\" stroke=\"#0a0e17\" stroke-width=\"1\"/></svg>"
-  );
-}
-function buildAirportIcon() {
-  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 20 20\"><circle cx=\"10\" cy=\"10\" r=\"8\" fill=\"none\" stroke=\"#4fc3f7\" stroke-width=\"1.5\"/><circle cx=\"10\" cy=\"10\" r=\"2\" fill=\"#4fc3f7\"/><line x1=\"10\" y1=\"2\" x2=\"10\" y2=\"6\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/><line x1=\"10\" y1=\"14\" x2=\"10\" y2=\"18\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/><line x1=\"2\" y1=\"10\" x2=\"6\" y2=\"10\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/><line x1=\"14\" y1=\"10\" x2=\"18\" y2=\"10\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/></svg>"
-  );
-}
-function buildWaypointIcon() {
-  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 12 12\"><polygon points=\"6,1 11,11 1,11\" fill=\"none\" stroke=\"#78909c\" stroke-width=\"1.2\"/></svg>"
-  );
-}
-function buildVortacIcon() {
-  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><polygon points=\"8,1 15,5 13,13 3,13 1,5\" fill=\"none\" stroke=\"#66bb6a\" stroke-width=\"1.2\"/><circle cx=\"8\" cy=\"8\" r=\"2\" fill=\"#66bb6a\"/></svg>"
-  );
-}
-
-function haversineNM(lng1, lat1, lng2, lat2) {
-  const R = 3440.065;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-function computeBearing(lng1, lat1, lng2, lat2) {
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const lat1r = lat1 * Math.PI / 180, lat2r = lat2 * Math.PI / 180;
-  const y = Math.sin(dLng) * Math.cos(lat2r);
-  const x = Math.cos(lat1r) * Math.sin(lat2r) - Math.sin(lat1r) * Math.cos(lat2r) * Math.cos(dLng);
-  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
-}
-
-let map = null;
-let ready = false;
-let showLabels = true;
-let measureMode = false;
-let measurePoints = [];
-let selectedCallsign = null;
-let aircraftState = {};
-let lastUpdate = performance.now();
-
-let waypointLayers = [];
-let vortacLayers = [];
-let aircraftMarkers = {};
-
-let measureLine = null;
-let measureMarkers = [];
-
-function updateWaypointVisibility() {
-  const zoom = map.getZoom();
-  if (showLabels && zoom >= 9) {
-    waypointLayers.forEach(l => { if (!map.hasLayer(l)) l.addTo(map); });
-  } else {
-    waypointLayers.forEach(l => { if (map.hasLayer(l)) l.remove(); });
-  }
-}
-
-function updateVortacVisibility() {
-  const zoom = map.getZoom();
-  if (showLabels && zoom >= 8) {
-    vortacLayers.forEach(l => { if (!map.hasLayer(l)) l.addTo(map); });
-  } else {
-    vortacLayers.forEach(l => { if (map.hasLayer(l)) l.remove(); });
-  }
-}
-
-function updateMeasureUi() {
-  const bar = document.getElementById("measure-bar");
-  if (!measureMode || measurePoints.length !== 2) {
-    bar.classList.add("hidden");
-    return;
-  }
-  const [a, b] = measurePoints;
-  document.getElementById("measure-dist").textContent = "↗ " + haversineNM(a.lng, a.lat, b.lng, b.lat).toFixed(1) + " NM";
-  document.getElementById("measure-brg").textContent = "BRG " + String(Math.round(computeBearing(a.lng, a.lat, b.lng, b.lat))).padStart(3, "0") + "°";
-  bar.classList.remove("hidden");
-  
-  measurePoints.forEach(p => {
-    const m = L.circleMarker(p, {
-      radius: 5,
-      color: '#f472b6',
-      fillColor: '#f472b6',
-      fillOpacity: 1,
-      weight: 2,
-      stroke: true
-    }).addTo(map);
-    measureMarkers.push(m);
-  });
-  
-  measureLine = L.polyline([a, b], {
-    color: '#f472b6',
-    weight: 2,
-    dashArray: '4, 4',
-    interactive: false
-  }).addTo(map);
-}
-
-function normalizeAircraftPayload(data) {
-  if (!data) return {};
-  if (data.aircraft && typeof data.aircraft === "object") data = data.aircraft;
-  const out = {};
-  if (Array.isArray(data)) {
-    for (const ac of data) {
-      const cs = ac.callsign || ac.Callsign || ac.name;
-      if (!cs) continue;
-      out[cs] = normalizeOneAircraft(cs, ac);
-    }
-    return out;
-  }
-  if (typeof data === "object") {
-    for (const [cs, ac] of Object.entries(data)) {
-      if (!ac || typeof ac !== "object") continue;
-      out[cs] = normalizeOneAircraft(cs, ac);
-    }
-  }
-  return out;
-}
-
-function normalizeOneAircraft(cs, ac) {
-  const pos = ac.position || {};
-  return {
-    callsign: cs,
-    aircraftType: ac.aircraftType || ac.type || ac.AircraftType || "General Aviation",
-    heading: ac.heading || ac.Heading || 0,
-    altitude: ac.altitude || ac.Altitude || 0,
-    groundSpeed: ac.groundSpeed || ac.speed || ac.GroundSpeed || 0,
-    isOnGround: !!(ac.isOnGround || ac.onGround),
-    position: { x: pos.x || ac.x || 0, y: pos.y || ac.y || 0 }
-  };
-}
-
-async function fetchAircraft() {
-  const urls = [
-    "https://ws.awdevhardware.org/acft-data",
-    "https://24data.ptfs.app/acft-data"
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const ac = normalizeAircraftPayload(json);
-      if (Object.keys(ac).length > 0) return ac;
-    } catch (_) {}
-  }
-  return null;
-}
-
-function seedDemoAircraft() {
-  const demo = {};
-  const samples = [
-    { cs: "AAL427", type: "Boeing 737", x: -2925, y: 20082, hdg: 250, spd: 420, alt: 24000 },
-    { cs: "DAL109", type: "Airbus A320", x: -16272, y: 23655, hdg: 90, spd: 390, alt: 28000 },
-    { cs: "UAE12", type: "Airbus A380", x: 18105, y: -20409, hdg: 310, spd: 470, alt: 35000 },
-    { cs: "JAL81", type: "Boeing 787", x: -7368, y: -31953, hdg: 40, spd: 450, alt: 37000 },
-    { cs: "N17GA", type: "General Aviation", x: 5778, y: -4509, hdg: 180, spd: 140, alt: 6500 }
-  ];
-  for (const s of samples) {
-    demo[s.cs] = {
-      callsign: s.cs, aircraftType: s.type, heading: s.hdg, altitude: s.alt,
-      groundSpeed: s.spd, isOnGround: false, position: { x: s.x, y: s.y }
+    const STUDS_TO_METERS = 1852 / 3307.14286;
+    const STUDS_PER_SEC = 0.5442765;
+    const DEG_TO_RAD = Math.PI / 180;
+    const AIRPORTS = [{ "icao": "IRFD", "name": "Greater Rockford", "region": "Rockford", "x": -2925, "y": 20082, "hasILS": true }, { "icao": "IGAR", "name": "Air Base Garry", "region": "Rockford", "x": -16272, "y": 23655, "hasILS": false }, { "icao": "IBLT", "name": "Boltic Airfield", "region": "Rockford", "x": -11226, "y": 17466, "hasILS": false }, { "icao": "IMLR", "name": "Mellor", "region": "Rockford", "x": -19365, "y": 14766, "hasILS": true }, { "icao": "ITRC", "name": "Training Centre", "region": "Rockford", "x": -1995, "y": 30057, "hasILS": true }, { "icao": "ILAR", "name": "Larnaca", "region": "Cyprus", "x": 21330, "y": 32406, "hasILS": true }, { "icao": "IPAP", "name": "Paphos", "region": "Cyprus", "x": 31731, "y": 34272, "hasILS": true }, { "icao": "IIAB", "name": "McConnell AFB", "region": "Cyprus", "x": 23220, "y": 40350, "hasILS": false }, { "icao": "IGRV", "name": "Grindavik", "region": "Grindavik", "x": -43158, "y": -2757, "hasILS": true }, { "icao": "IPPH", "name": "Perth", "region": "Perth", "x": 18105, "y": -20409, "hasILS": true }, { "icao": "ILKL", "name": "Lukla", "region": "Perth", "x": 22623, "y": -16512, "hasILS": false }, { "icao": "ITKO", "name": "Tokyo", "region": "Orenji", "x": -7368, "y": -31953, "hasILS": true }, { "icao": "IDCS", "name": "Saba", "region": "Orenji", "x": -4854, "y": -44892, "hasILS": false }, { "icao": "IZOL", "name": "Izolirani", "region": "Izolirani", "x": 44772, "y": 3420, "hasILS": true }, { "icao": "IJAF", "name": "Al Najaf", "region": "Izolirani", "x": 46182, "y": 222, "hasILS": true }, { "icao": "ISCM", "name": "RAF Scampton", "region": "Izolirani", "x": 36111, "y": -5001, "hasILS": false }, { "icao": "IBTH", "name": "Saint Barthelemy", "region": "SaintBarthelemy", "x": 5778, "y": -4509, "hasILS": false }, { "icao": "ISAU", "name": "Sauthemptona", "region": "Sauthemptona", "x": -46056, "y": 27501, "hasILS": false }];
+    const WAYPOINTS = [{ "name": "SHELL", "x": -26493, "y": -40395 }, { "name": "NIKON", "x": -12240, "y": -42360 }, { "name": "CHILY", "x": 3315, "y": -40650 }, { "name": "SHIBA", "x": -18480, "y": -37746 }, { "name": "LETSE", "x": -4908, "y": -35184 }, { "name": "HONDA", "x": 6171, "y": -35220 }, { "name": "ASTRO", "x": -15771, "y": -30717 }, { "name": "GULEG", "x": -22233, "y": -25842 }, { "name": "PIPER", "x": -13644, "y": -25113 }, { "name": "ONDER", "x": -5997, "y": -23073 }, { "name": "KNIFE", "x": 1062, "y": -24798 }, { "name": "TUDEP", "x": -16383, "y": -18261 }, { "name": "ALLRY", "x": 6009, "y": -18204 }, { "name": "CRAZY", "x": 18213, "y": -35193 }, { "name": "WOTAN", "x": 33834, "y": -33351 }, { "name": "WAGON", "x": 43389, "y": -30123 }, { "name": "WELLS", "x": 24522, "y": -26283 }, { "name": "SQUID", "x": 36015, "y": -26115 }, { "name": "ZESTA", "x": 46035, "y": -23397 }, { "name": "TINDR", "x": 10191, "y": -22410 }, { "name": "NOONU", "x": 28935, "y": -19086 }, { "name": "KELLA", "x": 33924, "y": -18804 }, { "name": "STRAX", "x": 11907, "y": -17349 }, { "name": "TALIS", "x": 25524, "y": -11688 }, { "name": "SISTA", "x": 31983, "y": -12702 }, { "name": "UDMUG", "x": 50277, "y": -14061 }, { "name": "ROSMO", "x": 39513, "y": -9591 }, { "name": "LLIME", "x": 53373, "y": -8349 }, { "name": "CAMEL", "x": 21027, "y": -6321 }, { "name": "DUNKS", "x": 28113, "y": -5961 }, { "name": "MORRD", "x": 50298, "y": -1980 }, { "name": "CYRIL", "x": 26388, "y": 438 }, { "name": "DOGGO", "x": 35742, "y": 7254 }, { "name": "ABSRS", "x": 54840, "y": 6690 }, { "name": "BILLO", "x": 46824, "y": 11157 }, { "name": "JUSTY", "x": 38118, "y": 16035 }, { "name": "CHAIN", "x": 54840, "y": 18969 }, { "name": "RENTS", "x": 25209, "y": 22182 }, { "name": "GRASS", "x": 17583, "y": 25671 }, { "name": "JACKI", "x": 33678, "y": 29502 }, { "name": "DEBUG", "x": 46734, "y": 29505 }, { "name": "BOBUX", "x": 39423, "y": 35382 }, { "name": "NUBER", "x": 54747, "y": 36882 }, { "name": "AQWRT", "x": 14826, "y": 36321 }, { "name": "FORIA", "x": 6009, "y": 42165 }, { "name": "MUONE", "x": 38181, "y": 42195 }, { "name": "JAZZR", "x": 46638, "y": 42240 }, { "name": "FORCE", "x": 20460, "y": 48891 }, { "name": "MASEV", "x": 29235, "y": 48891 }, { "name": "ALTRS", "x": 35931, "y": 48891 }, { "name": "CAWZE", "x": 18669, "y": 7617 }, { "name": "ANYMS", "x": 14163, "y": 18333 }, { "name": "GERLD", "x": -16539, "y": -15387 }, { "name": "RENDR", "x": -12456, "y": -14379 }, { "name": "JOOPY", "x": -2937, "y": -15414 }, { "name": "PROBE", "x": -8403, "y": -10497 }, { "name": "DINER", "x": 3075, "y": -9945 }, { "name": "WELSH", "x": -12498, "y": -4509 }, { "name": "INDEX", "x": -7029, "y": -699 }, { "name": "GAVIN", "x": 5388, "y": 1389 }, { "name": "SILVA", "x": 16503, "y": 1575 }, { "name": "OCEEN", "x": 10668, "y": 5256 }, { "name": "ENDER", "x": -20991, "y": 684 }, { "name": "SUNST", "x": -26238, "y": 5082 }, { "name": "KENED", "x": -12495, "y": 3669 }, { "name": "SETHR", "x": 2337, "y": 7653 }, { "name": "BUCFA", "x": -20472, "y": 8718 }, { "name": "KUNAV", "x": -12447, "y": 9489 }, { "name": "SAWPE", "x": -28527, "y": 10803 }, { "name": "ICTAM", "x": -14313, "y": 12456 }, { "name": "HAWFA", "x": -8880, "y": 11496 }, { "name": "QUEEN", "x": -3297, "y": 15606 }, { "name": "BEANS", "x": -28017, "y": 18990 }, { "name": "LOGAN", "x": -21063, "y": 20553 }, { "name": "LAVNO", "x": 1188, "y": 17634 }, { "name": "ATPEV", "x": 4266, "y": 16389 }, { "name": "JAMSI", "x": 7689, "y": 22431 }, { "name": "MOGTA", "x": -12255, "y": 23361 }, { "name": "EXMOR", "x": -19848, "y": 26751 }, { "name": "PEPUL", "x": -9489, "y": 28836 }, { "name": "GODLU", "x": 2301, "y": 27399 }, { "name": "LAZER", "x": 6984, "y": 29328 }, { "name": "EMJAY", "x": -15786, "y": 36090 }, { "name": "ODOKU", "x": -4803, "y": 36078 }, { "name": "TRELN", "x": -11238, "y": 45612 }, { "name": "REAPR", "x": -2412, "y": 44034 }, { "name": "HACKE", "x": -54678, "y": 20346 }, { "name": "GEORG", "x": -46344, "y": 22878 }, { "name": "SEEKS", "x": -37602, "y": 25821 }, { "name": "HECKS", "x": -56751, "y": 30276 }, { "name": "PACKT", "x": -49680, "y": 32220 }, { "name": "ALDER", "x": -28989, "y": 33447 }, { "name": "STACK", "x": -40317, "y": 35763 }, { "name": "WASTE", "x": -50265, "y": 40611 }, { "name": "HOGGS", "x": -30375, "y": 39738 }, { "name": "BULLY", "x": -34029, "y": -29853 }, { "name": "FROOT", "x": -40329, "y": -22335 }, { "name": "EURAD", "x": -27699, "y": -20175 }, { "name": "BOBOS", "x": -46806, "y": -16122 }, { "name": "BLANK", "x": -25092, "y": -14322 }, { "name": "THENR", "x": -40452, "y": -12771 }, { "name": "ACRES", "x": -51372, "y": -10767 }, { "name": "YOUTH", "x": -33150, "y": -8859 }, { "name": "UWAIS", "x": -56427, "y": -5775 }, { "name": "EZYDB", "x": -24729, "y": -4431 }, { "name": "FRANK", "x": -55854, "y": 1920 }, { "name": "CELAR", "x": -38040, "y": 5070 }, { "name": "THACC", "x": -55953, "y": 10374 }, { "name": "SHREK", "x": -47022, "y": 11247 }, { "name": "SPACE", "x": -37644, "y": 13071 }];
+    const VORTACS = [{ "name": "HANEDA", "id": "HME", "freq": "112.200", "x": -8574, "y": -32031 }, { "name": "CROIS NOOB", "id": "COC", "freq": "", "x": 15048, "y": -27387 }, { "name": "PERTH", "id": "PER", "freq": "115.430", "x": 15786, "y": -20832 }, { "name": "BRAINSTORM", "id": "BTM", "freq": "", "x": 23988, "y": -19914 }, { "name": "ORANGE", "id": "ORG", "freq": "", "x": 18495, "y": -15279 }, { "name": "ROMIES", "id": "ROM", "freq": "", "x": 8283, "y": -10806 }, { "name": "RESURGE", "id": "RES", "freq": "", "x": -864, "y": -4086 }, { "name": "VONARX", "id": "VOX", "freq": "", "x": 10806, "y": -4446 }, { "name": "HOTDOG", "id": "HOT", "freq": "", "x": 35349, "y": -4632 }, { "name": "TRESIN", "id": "TRE", "freq": "", "x": 34905, "y": 690 }, { "name": "AL NAJAF", "id": "NJF", "freq": "112.450", "x": 45393, "y": 183 }, { "name": "IZOLIRANI", "id": "IZO", "freq": "117.530", "x": 44352, "y": 3420 }, { "name": "DIZZIER", "id": "DIZ", "freq": "", "x": 48342, "y": 4560 }, { "name": "DETOX", "id": "DET", "freq": "", "x": 46527, "y": 17787 }, { "name": "KINDLE", "id": "KIN", "freq": "", "x": 29349, "y": 27636 }, { "name": "LARNACA", "id": "LCK", "freq": "122.670", "x": 20712, "y": 31773 }, { "name": "PAPHOS", "id": "PFO", "freq": "117.900", "x": 29994, "y": 34413 }, { "name": "CANDLE", "id": "CAN", "freq": "", "x": 9366, "y": 39216 }, { "name": "DIRECTOR", "id": "DIR", "freq": "", "x": 11997, "y": 44199 }, { "name": "HUNTER", "id": "HUT", "freq": "", "x": 29511, "y": 39537 }, { "name": "MELLOR", "id": "MLR", "freq": "125.700", "x": -20286, "y": 14640 }, { "name": "BLANK", "id": "BLA", "freq": "", "x": -8784, "y": 14955 }, { "name": "ROCKFORD", "id": "RFD", "freq": "115.900", "x": -4728, "y": 20217 }, { "name": "GREY", "id": "GRY", "freq": "", "x": -17034, "y": 23226 }, { "name": "TRAINING CENTRE", "id": "TRN", "freq": "127.730", "x": -3423, "y": 29943 }, { "name": "KROTEN", "id": "KRT", "freq": "", "x": -51972, "y": 24579 }, { "name": "SAUTHEMPTONA", "id": "SAU", "freq": "113.350", "x": -46926, "y": 27147 }, { "name": "BARNIE", "id": "BAR", "freq": "", "x": -38961, "y": 30273 }, { "name": "DELIVERY", "id": "DEL", "freq": "", "x": 27828, "y": 11349 }, { "name": "CLEARANCE", "id": "CLR", "freq": "", "x": 20046, "y": 14943 }, { "name": "GRINDAVIK", "id": "GVK", "freq": "112.320", "x": -44550, "y": -3396 }, { "name": "GOLDEN", "id": "GOL", "freq": "", "x": -48945, "y": -2394 }, { "name": "HAWKIN", "id": "HAW", "freq": "", "x": -40545, "y": -6075 }];
+    const BOUNDARIES = [{ "points": [[-26168.786517284512, 51531.027315541185], [-26039.63549648512, 30737.71296683982], [-34434.4518484453, 23117.802739675968], [-34692.75389004407, 1937.0353285764468], [-25652.182434086957, -4778.817752991694], [8960.291140148844, 4649.20676536358], [11543.31155613659, 9040.34147254275], [13609.727888926787, 12914.87209652437], [15934.446263315758, 22213.745594080257], [17096.80545051025, 27767.23948845391], [3794.2503081733503, 34095.63950762389], [3923.4013289727372, 51143.574253143015], [-26039.63549648512, 51143.574253143015], [-26039.63549648512, 51143.574253143015]] }, { "points": [[-34692.75389004407, 18984.970074095574], [-51224.08455236565, 13173.174138123144], [-65688.99888189703, 11752.512909329884], [-65301.54581949887, 51272.7252739424], [-26039.63549648512, 51531.027315541185], [-26039.63549648512, 51401.87629474179]] }, { "points": [[-25523.031413287572, -5166.270815389869], [-20227.839560512693, -16919.013708134116], [-31722.280411658165, -52693.84646956441], [-65559.84786109765, -52822.99749036379], [-65559.84786109765, 11494.210867731097], [-65559.84786109765, 11494.210867731097]] }, { "points": [[-20227.839560512693, -17306.46677053228], [-18548.876290120657, -20406.091269717574], [11155.85849373843, -20406.091269717574], [11155.85849373843, -52822.99749036379], [-31980.582453256942, -52952.14851116318], [-31980.582453256942, -52952.14851116318]] }, { "points": [[11285.009514537818, -20535.242290516966], [16321.899325713923, -18856.279020124934], [20325.580970494928, -8395.04633537456], [26008.225885667973, -10590.613688964144], [35436.250404023245, -10978.066751362305], [54033.99739913503, -21439.29943611268], [69402.96887426212, -20922.69535291513], [69144.66683266334, -52693.84646956441], [11026.70747293904, -52822.99749036381], [11026.70747293904, -52822.99749036381]] }, { "points": [[20454.731991294302, -7620.140210578233], [26395.678948066117, -2970.703461800287], [23941.80955287776, 5294.961869360501], [11672.462576935963, 9427.794534940895], [11543.311556136574, 9427.794534940895]] }, { "points": [[24200.111594476533, 4907.508806962338], [32078.32386323916, 2582.790432573367], [39569.08306960363, 3099.3945157709168], [39569.08306960363, 6457.321056554987], [37244.36469521465, 8911.190451743347], [37631.817757612815, 15239.590470913325], [39181.630007205466, 16401.94965810781], [16192.74830491452, 22472.047635679017], [16192.74830491452, 22472.047635679017]] }, { "points": [[39827.3851112024, 16531.100678907198], [43960.217776782796, 20534.782323688203], [68886.36479106455, 25184.21907246615], [69144.66683266332, 51531.02731554117], [4052.552349772108, 51401.87629474177], [4052.552349772108, 51401.87629474177]] }];
+    const PLANE_ICON_FILES = ["737", "747", "A300", "A320", "A330", "A340", "A3402", "A350", "A380", "AN-225", "B757", "B777", "B787", "C17", "Drone", "GA", "GC", "Hele1", "Hele2", "hotairballon", "ISS", "Layer 17", "PJ", "old737", "Prop", "Prop2", "RegionalJet", "Satelite", "SolarPlane", "SuperSonic", "flider"];
+    const DEFAULT_PLANE_ICON = "plane-GA";
+    const AIRCRAFT_TYPE_TO_ICON = {
+      "Boeing 737": "plane-737", "Boeing 737 MAX": "plane-737", "Boeing 747": "plane-747", "Boeing 757": "plane-B757",
+      "Boeing 777": "plane-B777", "Boeing 787": "plane-B787", "Airbus A300": "plane-A300", "Airbus A320": "plane-A320",
+      "Airbus A330": "plane-A330", "Airbus A340": "plane-A340", "Airbus A350": "plane-A350", "Airbus A380": "plane-A380",
+      "Private Jet": "plane-PJ", "Helicopter": "plane-Hele1", "General Aviation": "plane-GA", "Cessna": "plane-GA",
+      "Regional Jet": "plane-RegionalJet", "Prop Plane": "plane-Prop", "ISS": "plane-ISS"
     };
-  }
-  return demo;
-}
 
-function getAircraftIconHtml(iconName, heading, isSelected) {
-  let size = isSelected ? 48 : 36;
-  let fill = isSelected ? "#22c55e" : "#06b6d4";
-  
-  if (iconName === 'aircraft-icon' || iconName === 'DEFAULT_PLANE_ICON' || !iconName.startsWith('plane-')) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" style="transform: rotate(${heading}deg); transform-origin: center; display: block;"><path d="M12 2L15 10H22L16 14L18 22L12 18L6 22L8 14L2 10H9L12 2Z" fill="${fill}" stroke="#0a0e17" stroke-width="1"/></svg>`;
-  } else {
-    const file = iconName.substring(6);
-    const url = `/Plane%20Icons/${encodeURIComponent(file)}.png`;
-    let filterStyle = '';
-    if (isSelected) {
-      filterStyle = 'filter: drop-shadow(0 0 4px #22c55e) brightness(1.2);';
+    function projectStudsToLngLat(x, y) {
+      const lat = -(y * STUDS_TO_METERS) / 111111;
+      const lng = (x * STUDS_TO_METERS) / (111111 * Math.cos(lat * (Math.PI / 180)));
+      return [lng, lat];
     }
-    return `<img src="${url}" width="${size}" height="${size}" style="transform: rotate(${heading}deg); transform-origin: center; display: block; ${filterStyle}" />`;
-  }
-}
 
-function renderAircraft() {
-  if (!ready) return;
-  const elapsed = (performance.now() - lastUpdate) / 1000;
-  const currentCallsigns = new Set();
-  
-  for (const [cs, ac] of Object.entries(aircraftState)) {
-    currentCallsigns.add(cs);
-    let x = ac.position.x, y = ac.position.y;
-    if (!ac.isOnGround && (ac.groundSpeed || 0) > 5 && elapsed < 8) {
-      const hdg = ((ac.heading || 0) - 90) * DEG_TO_RAD;
-      const spd = (ac.groundSpeed || 0) * STUDS_PER_SEC;
-      x += Math.cos(hdg) * spd * elapsed;
-      y += Math.sin(hdg) * spd * elapsed;
+    function getPlaneIconName(aircraftType) {
+      if (AIRCRAFT_TYPE_TO_ICON[aircraftType]) return AIRCRAFT_TYPE_TO_ICON[aircraftType];
+      const lower = (aircraftType || "").toLowerCase();
+      if (lower.includes("737")) return "plane-737";
+      if (lower.includes("747")) return "plane-747";
+      if (lower.includes("777")) return "plane-B777";
+      if (lower.includes("787")) return "plane-B787";
+      if (lower.includes("a320") || lower.includes("a319") || lower.includes("a321")) return "plane-A320";
+      if (lower.includes("a330")) return "plane-A330";
+      if (lower.includes("a350")) return "plane-A350";
+      if (lower.includes("a380")) return "plane-A380";
+      if (lower.includes("heli")) return "plane-Hele1";
+      if (lower.includes("private") || lower.includes("business")) return "plane-PJ";
+      return DEFAULT_PLANE_ICON;
     }
-    const latlng = projectStudsToLatLng(x, y);
-    const isSelected = cs === selectedCallsign;
-    const iconName = getPlaneIconName(ac.aircraftType || "");
-    const size = isSelected ? 48 : 36;
-    
-    const divIcon = L.divIcon({
-      html: getAircraftIconHtml(iconName, ac.heading || 0, isSelected),
-      className: 'aircraft-div-icon',
-      iconSize: [size, size],
-      iconAnchor: [size / 2, size / 2]
-    });
-    
-    let marker = aircraftMarkers[cs];
-    if (marker) {
-      marker.setLatLng(latlng);
-      marker.setIcon(divIcon);
-    } else {
-      marker = L.marker(latlng, { icon: divIcon }).addTo(map);
-      marker.on('click', (e) => {
+
+    function buildSvgIcon(fill) {
+      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\"><path d=\"M12 2L15 10H22L16 14L18 22L12 18L6 22L8 14L2 10H9L12 2Z\" fill=\"" + fill + "\" stroke=\"#0a0e17\" stroke-width=\"1\"/></svg>"
+      );
+    }
+    function buildAirportIcon() {
+      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 20 20\"><circle cx=\"10\" cy=\"10\" r=\"8\" fill=\"none\" stroke=\"#4fc3f7\" stroke-width=\"1.5\"/><circle cx=\"10\" cy=\"10\" r=\"2\" fill=\"#4fc3f7\"/><line x1=\"10\" y1=\"2\" x2=\"10\" y2=\"6\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/><line x1=\"10\" y1=\"14\" x2=\"10\" y2=\"18\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/><line x1=\"2\" y1=\"10\" x2=\"6\" y2=\"10\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/><line x1=\"14\" y1=\"10\" x2=\"18\" y2=\"10\" stroke=\"#4fc3f7\" stroke-width=\"1.2\"/></svg>"
+      );
+    }
+    function buildWaypointIcon() {
+      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 12 12\"><polygon points=\"6,1 11,11 1,11\" fill=\"none\" stroke=\"#78909c\" stroke-width=\"1.2\"/></svg>"
+      );
+    }
+    function buildVortacIcon() {
+      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><polygon points=\"8,1 15,5 13,13 3,13 1,5\" fill=\"none\" stroke=\"#66bb6a\" stroke-width=\"1.2\"/><circle cx=\"8\" cy=\"8\" r=\"2\" fill=\"#66bb6a\"/></svg>"
+      );
+    }
+
+    function haversineNM(lng1, lat1, lng2, lat2) {
+      const R = 3440.065;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+    function computeBearing(lng1, lat1, lng2, lat2) {
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const lat1r = lat1 * Math.PI / 180, lat2r = lat2 * Math.PI / 180;
+      const y = Math.sin(dLng) * Math.cos(lat2r);
+      const x = Math.cos(lat1r) * Math.sin(lat2r) - Math.sin(lat1r) * Math.cos(lat2r) * Math.cos(dLng);
+      return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+    }
+
+    let map = null;
+    let ready = false;
+    let showLabels = true;
+    let measureMode = false;
+    let measurePoints = [];
+    let selectedCallsign = null;
+    let aircraftState = {};
+    let lastUpdate = performance.now();
+
+    function loadImage(name, url, w, h, sdf) {
+      return new Promise((resolve) => {
+        const img = new Image(w, h);
+        img.onload = () => {
+          if (!map.hasImage(name)) map.addImage(name, img, { sdf: !!sdf });
+          resolve();
+        };
+        img.onerror = () => resolve();
+        img.src = url;
+      });
+    }
+
+    function setVisibility(layer, vis) {
+      if (map.getLayer(layer)) map.setLayoutProperty(layer, "visibility", vis);
+    }
+
+    function updateMeasureUi() {
+      const bar = document.getElementById("measure-bar");
+      if (!measureMode || measurePoints.length !== 2) {
+        bar.classList.add("hidden");
+        return;
+      }
+      const [a, b] = measurePoints;
+      document.getElementById("measure-dist").textContent = "↗ " + haversineNM(a.lng, a.lat, b.lng, b.lat).toFixed(1) + " NM";
+      document.getElementById("measure-brg").textContent = "BRG " + String(Math.round(computeBearing(a.lng, a.lat, b.lng, b.lat))).padStart(3, "0") + "°";
+      bar.classList.remove("hidden");
+      const lineSource = map.getSource("measure-line");
+      const pointSource = map.getSource("measure-points");
+      pointSource.setData({ type: "FeatureCollection", features: measurePoints.map(p => ({ type: "Feature", geometry: { type: "Point", coordinates: [p.lng, p.lat] }, properties: {} })) });
+      lineSource.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[a.lng, a.lat], [b.lng, b.lat]] }, properties: {} }] });
+    }
+
+    function normalizeAircraftPayload(data) {
+      if (!data) return {};
+      if (data.aircraft && typeof data.aircraft === "object") data = data.aircraft;
+      const out = {};
+      if (Array.isArray(data)) {
+        for (const ac of data) {
+          const cs = ac.callsign || ac.Callsign || ac.name;
+          if (!cs) continue;
+          out[cs] = normalizeOneAircraft(cs, ac);
+        }
+        return out;
+      }
+      if (typeof data === "object") {
+        for (const [cs, ac] of Object.entries(data)) {
+          if (!ac || typeof ac !== "object") continue;
+          out[cs] = normalizeOneAircraft(cs, ac);
+        }
+      }
+      return out;
+    }
+
+    function normalizeOneAircraft(cs, ac) {
+      const pos = ac.position || {};
+      return {
+        callsign: cs,
+        aircraftType: ac.aircraftType || ac.type || ac.AircraftType || "General Aviation",
+        heading: ac.heading || ac.Heading || 0,
+        altitude: ac.altitude || ac.Altitude || 0,
+        groundSpeed: ac.groundSpeed || ac.speed || ac.GroundSpeed || 0,
+        isOnGround: !!(ac.isOnGround || ac.onGround),
+        position: { x: pos.x || ac.x || 0, y: pos.y || ac.y || 0 }
+      };
+    }
+
+    async function fetchAircraft() {
+      const urls = [
+        "https://ws.awdevhardware.org/acft-data",
+        "https://24data.ptfs.app/acft-data"
+      ];
+      for (const url of urls) {
+        try {
+          const res = await fetch(url, { cache: "no-store" });
+          if (!res.ok) continue;
+          const json = await res.json();
+          const ac = normalizeAircraftPayload(json);
+          if (Object.keys(ac).length > 0) return ac;
+        } catch (_) { }
+      }
+      return null;
+    }
+
+    function seedDemoAircraft() {
+      const demo = {};
+      const samples = [
+        { cs: "AAL427", type: "Boeing 737", x: -2925, y: 20082, hdg: 250, spd: 420, alt: 24000 },
+        { cs: "DAL109", type: "Airbus A320", x: -16272, y: 23655, hdg: 90, spd: 390, alt: 28000 },
+        { cs: "UAE12", type: "Airbus A380", x: 18105, y: -20409, hdg: 310, spd: 470, alt: 35000 },
+        { cs: "JAL81", type: "Boeing 787", x: -7368, y: -31953, hdg: 40, spd: 450, alt: 37000 },
+        { cs: "N17GA", type: "General Aviation", x: 5778, y: -4509, hdg: 180, spd: 140, alt: 6500 }
+      ];
+      for (const s of samples) {
+        demo[s.cs] = {
+          callsign: s.cs, aircraftType: s.type, heading: s.hdg, altitude: s.alt,
+          groundSpeed: s.spd, isOnGround: false, position: { x: s.x, y: s.y }
+        };
+      }
+      return demo;
+    }
+
+    function renderAircraft() {
+      if (!ready) return;
+      const elapsed = (performance.now() - lastUpdate) / 1000;
+      const features = [];
+      for (const [cs, ac] of Object.entries(aircraftState)) {
+        let x = ac.position.x, y = ac.position.y;
+        if (!ac.isOnGround && (ac.groundSpeed || 0) > 5 && elapsed < 8) {
+          const hdg = ((ac.heading || 0) - 90) * DEG_TO_RAD;
+          const spd = (ac.groundSpeed || 0) * STUDS_PER_SEC;
+          x += Math.cos(hdg) * spd * elapsed;
+          y += Math.sin(hdg) * spd * elapsed;
+        }
+        const [lng, lat] = projectStudsToLngLat(x, y);
+        const isSelected = cs === selectedCallsign;
+        features.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [lng, lat] },
+          properties: {
+            callsign: cs,
+            icon: getPlaneIconName(ac.aircraftType || ""),
+            heading: ac.heading || 0,
+            label: showLabels ? cs : "",
+            isSelected: isSelected,
+            iconColor: isSelected ? "#22c55e" : "#ffffff",
+            textColor: isSelected ? "#22c55e" : "#94a3b8",
+            meta: (ac.aircraftType || "") + " · FL" + Math.round((ac.altitude || 0) / 100) + " · " + Math.round(ac.groundSpeed || 0) + "kt"
+          }
+        });
+      }
+      const src = map.getSource("aircraft");
+      if (src) src.setData({ type: "FeatureCollection", features: features });
+      document.getElementById("ac-count").textContent = features.length + " tracks";
+    }
+
+    async function refreshAircraft() {
+      const live = await fetchAircraft();
+      aircraftState = live || aircraftState;
+      if (!live && Object.keys(aircraftState).length === 0) aircraftState = seedDemoAircraft();
+      lastUpdate = performance.now();
+      renderAircraft();
+    }
+
+    function initMap() {
+      const center = projectStudsToLngLat(-1417, 17840);
+      map = new maplibregl.Map({
+        container: "map",
+        style: {
+          version: 8,
+          sources: {},
+          layers: [{ id: "background", type: "background", paint: { "background-color": "#0a0e17" } }],
+          glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf"
+        },
+        center: center,
+        zoom: 10,
+        maxZoom: 16,
+        minZoom: 6
+      });
+
+      map.on("load", async () => {
+        const iconPromises = [
+          loadImage("aircraft-icon", buildSvgIcon("#06b6d4"), 24, 24),
+          loadImage("airport-icon", buildAirportIcon(), 20, 20),
+          loadImage("waypoint-icon", buildWaypointIcon(), 12, 12),
+          loadImage("vortac-icon", buildVortacIcon(), 16, 16),
+          ...PLANE_ICON_FILES.map(f => loadImage("plane-" + f, "/Plane%20Icons/" + encodeURIComponent(f) + ".png", 48, 48, true))
+        ];
+        await Promise.all(iconPromises);
+
+        map.addSource("boundaries", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: BOUNDARIES.map(seg => ({
+              type: "Feature",
+              geometry: { type: "LineString", coordinates: seg.points.map(([x, y]) => projectStudsToLngLat(x, y)) },
+              properties: {}
+            }))
+          }
+        });
+        map.addLayer({ id: "boundary-lines", type: "line", source: "boundaries", paint: { "line-color": "#1e3a5f", "line-width": 1, "line-opacity": 0.6 } });
+
+        map.addSource("waypoints", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: WAYPOINTS.map(wp => ({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: projectStudsToLngLat(wp.x, wp.y) },
+              properties: { name: wp.name }
+            }))
+          }
+        });
+        map.addLayer({
+          id: "waypoints-layer", type: "symbol", source: "waypoints",
+          layout: {
+            "icon-image": "waypoint-icon", "icon-size": 0.8, "icon-allow-overlap": true,
+            "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"], "text-size": 9,
+            "text-offset": [0, 1.2], "text-allow-overlap": false
+          },
+          paint: { "text-color": "#546e7a", "text-halo-color": "#0a0e17", "text-halo-width": 1 },
+          minzoom: 9
+        });
+
+        map.addSource("vortacs", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: VORTACS.map(v => ({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: projectStudsToLngLat(v.x, v.y) },
+              properties: { label: v.freq ? (v.id + " " + v.freq) : v.id }
+            }))
+          }
+        });
+        map.addLayer({
+          id: "vortacs-layer", type: "symbol", source: "vortacs",
+          layout: {
+            "icon-image": "vortac-icon", "icon-size": 1, "icon-allow-overlap": true,
+            "text-field": ["get", "label"], "text-font": ["Noto Sans Regular"], "text-size": 9,
+            "text-offset": [0, 1.6], "text-allow-overlap": false
+          },
+          paint: { "text-color": "#66bb6a", "text-halo-color": "#0a0e17", "text-halo-width": 1 },
+          minzoom: 8
+        });
+
+        map.addSource("airports", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: AIRPORTS.map(ap => ({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: projectStudsToLngLat(ap.x, ap.y) },
+              properties: { icao: ap.icao, name: ap.name, label: ap.icao + "\n" + ap.name }
+            }))
+          }
+        });
+        map.addLayer({
+          id: "airports-layer", type: "symbol", source: "airports",
+          layout: {
+            "icon-image": "airport-icon", "icon-size": 1.2, "icon-allow-overlap": true, "icon-ignore-placement": true,
+            "text-field": ["get", "label"], "text-font": ["Noto Sans Regular"], "text-size": 11,
+            "text-offset": [0, 2], "text-allow-overlap": true, "text-ignore-placement": true, "text-anchor": "top"
+          },
+          paint: { "text-color": "#4fc3f7", "text-halo-color": "#0a0e17", "text-halo-width": 2 }
+        });
+
+        map.addSource("aircraft", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({
+          id: "aircraft-layer", type: "symbol", source: "aircraft",
+          layout: {
+            "icon-image": ["coalesce", ["image", ["get", "icon"]], "aircraft-icon"],
+            "icon-size": ["case", ["get", "isSelected"], 1.3, 1],
+            "icon-rotate": ["get", "heading"], "icon-rotation-alignment": "map",
+            "icon-allow-overlap": true, "icon-ignore-placement": true,
+            "text-field": ["get", "label"], "text-font": ["Noto Sans Regular"], "text-size": 10,
+            "text-offset": [0, 1.6], "text-allow-overlap": true, "text-ignore-placement": true
+          },
+          paint: {
+            "icon-color": ["get", "iconColor"], "icon-halo-color": "#000000", "icon-halo-width": 1.5,
+            "text-color": ["get", "textColor"], "text-halo-color": "#0a0e17", "text-halo-width": 1
+          }
+        });
+
+        map.addSource("measure-line", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({ id: "measure-line-layer", type: "line", source: "measure-line", paint: { "line-color": "#f472b6", "line-width": 2, "line-dasharray": [2, 2] } });
+        map.addSource("measure-points", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({ id: "measure-points-layer", type: "circle", source: "measure-points", paint: { "circle-radius": 5, "circle-color": "#f472b6", "circle-stroke-width": 2, "circle-stroke-color": "#0a0e17" } });
+
+        ready = true;
+        aircraftState = seedDemoAircraft();
+        lastUpdate = performance.now();
+        renderAircraft();
+        refreshAircraft();
+        setInterval(refreshAircraft, 4000);
+      });
+
+      map.on("click", (e) => {
+        if (!measureMode) return;
+        const pt = { lng: e.lngLat.lng, lat: e.lngLat.lat };
+        measurePoints = measurePoints.length >= 2 ? [pt] : measurePoints.concat([pt]);
+        if (measurePoints.length < 2) {
+          map.getSource("measure-line").setData({ type: "FeatureCollection", features: [] });
+          map.getSource("measure-points").setData({
+            type: "FeatureCollection",
+            features: measurePoints.map(p => ({ type: "Feature", geometry: { type: "Point", coordinates: [p.lng, p.lat] }, properties: {} }))
+          });
+          document.getElementById("measure-bar").classList.add("hidden");
+        } else updateMeasureUi();
+      });
+
+      map.on("click", "aircraft-layer", (e) => {
         if (measureMode) return;
-        L.DomEvent.stopPropagation(e);
-        selectedCallsign = cs;
+        const f = e.features && e.features[0];
+        if (!f) return;
+        selectedCallsign = f.properties.callsign;
         document.getElementById("selected").classList.remove("hidden");
-        document.getElementById("sel-cs").textContent = cs;
-        document.getElementById("sel-meta").textContent = (ac.aircraftType || "") + " · FL" + Math.round((ac.altitude || 0) / 100) + " · " + Math.round(ac.groundSpeed || 0) + "kt";
+        document.getElementById("sel-cs").textContent = selectedCallsign;
+        document.getElementById("sel-meta").textContent = f.properties.meta || "";
         renderAircraft();
       });
-      aircraftMarkers[cs] = marker;
+
+      map.on("mouseenter", "aircraft-layer", () => { map.getCanvas().style.cursor = "pointer"; });
+      map.on("mouseleave", "aircraft-layer", () => { map.getCanvas().style.cursor = measureMode ? "crosshair" : ""; });
     }
-    
-    if (showLabels) {
-      const labelText = cs;
-      if (!marker.getTooltip()) {
-        marker.bindTooltip(labelText, {
-          permanent: true,
-          direction: 'bottom',
-          className: 'aircraft-label' + (isSelected ? ' selected' : ''),
-          offset: [0, size / 2]
-        });
-      } else {
-        marker.setTooltipContent(labelText);
-        marker.getTooltip().options.className = 'aircraft-label' + (isSelected ? ' selected' : '');
-        marker.getTooltip().options.offset = [0, size / 2];
-      }
-    } else {
-      if (marker.getTooltip()) {
-        marker.unbindTooltip();
-      }
-    }
-  }
-  
-  for (const cs of Object.keys(aircraftMarkers)) {
-    if (!currentCallsigns.has(cs)) {
-      aircraftMarkers[cs].remove();
-      delete aircraftMarkers[cs];
-    }
-  }
-  
-  document.getElementById("ac-count").textContent = Object.keys(aircraftMarkers).length + " tracks";
-}
 
-async function refreshAircraft() {
-  const live = await fetchAircraft();
-  aircraftState = live || aircraftState;
-  if (!live && Object.keys(aircraftState).length === 0) aircraftState = seedDemoAircraft();
-  lastUpdate = performance.now();
-  renderAircraft();
-}
-
-function initMap() {
-  const center = projectStudsToLatLng(-1417, 17840);
-  map = L.map('map', {
-    center: center,
-    zoom: 10,
-    maxZoom: 16,
-    minZoom: 6,
-    zoomControl: false,
-    attributionControl: false
-  });
-  
-  L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-  map.on("click", (e) => {
-    if (measureMode) return;
-    selectedCallsign = null;
-    document.getElementById("selected").classList.add("hidden");
-    renderAircraft();
-  });
-
-  BOUNDARIES.forEach(seg => {
-    const latlngs = seg.points.map(([x, y]) => projectStudsToLatLng(x, y));
-    L.polyline(latlngs, {
-      color: '#1e3a5f',
-      weight: 1.5,
-      opacity: 0.6,
-      interactive: false
-    }).addTo(map);
-  });
-
-  WAYPOINTS.forEach(wp => {
-    const latlng = projectStudsToLatLng(wp.x, wp.y);
-    const marker = L.marker(latlng, {
-      icon: L.icon({
-        iconUrl: buildWaypointIcon(),
-        iconSize: [12, 12],
-        iconAnchor: [6, 6]
-      }),
-      interactive: false
+    document.getElementById("btn-labels").addEventListener("click", () => {
+      showLabels = !showLabels;
+      const btn = document.getElementById("btn-labels");
+      btn.classList.toggle("active", showLabels);
+      btn.textContent = showLabels ? "Fixes ON" : "Fixes OFF";
+      const vis = showLabels ? "visible" : "none";
+      setVisibility("waypoints-layer", vis);
+      setVisibility("vortacs-layer", vis);
+      renderAircraft();
     });
-    marker.bindTooltip(wp.name, {
-      permanent: true,
-      direction: 'bottom',
-      className: 'wp-label',
-      offset: [0, 6]
-    });
-    waypointLayers.push(marker);
-  });
 
-  VORTACS.forEach(v => {
-    const latlng = projectStudsToLatLng(v.x, v.y);
-    const marker = L.marker(latlng, {
-      icon: L.icon({
-        iconUrl: buildVortacIcon(),
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-      }),
-      interactive: false
-    });
-    const label = v.freq ? (v.id + " " + v.freq) : v.id;
-    marker.bindTooltip(label, {
-      permanent: true,
-      direction: 'bottom',
-      className: 'vortac-label',
-      offset: [0, 8]
-    });
-    vortacLayers.push(marker);
-  });
-
-  AIRPORTS.forEach(ap => {
-    const latlng = projectStudsToLatLng(ap.x, ap.y);
-    const marker = L.marker(latlng, {
-      icon: L.icon({
-        iconUrl: buildAirportIcon(),
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-      }),
-      interactive: false
-    }).addTo(map);
-    const label = ap.icao + "<br>" + ap.name;
-    marker.bindTooltip(label, {
-      permanent: true,
-      direction: 'bottom',
-      className: 'airport-label',
-      offset: [0, 10]
-    });
-  });
-
-  map.on('zoomend', () => {
-    updateWaypointVisibility();
-    updateVortacVisibility();
-  });
-
-  updateWaypointVisibility();
-  updateVortacVisibility();
-
-  map.on("click", (e) => {
-    if (!measureMode) return;
-    const pt = e.latlng;
-    measurePoints = measurePoints.length >= 2 ? [pt] : measurePoints.concat([pt]);
-    
-    if (measureLine) {
-      measureLine.remove();
-      measureLine = null;
-    }
-    measureMarkers.forEach(m => m.remove());
-    measureMarkers = [];
-    
-    if (measurePoints.length < 2) {
+    document.getElementById("btn-measure").addEventListener("click", () => {
+      measureMode = !measureMode;
+      measurePoints = [];
+      const btn = document.getElementById("btn-measure");
+      btn.classList.toggle("measure-on", measureMode);
+      btn.textContent = measureMode ? "Measure ON" : "Measure";
+      map.getCanvas().style.cursor = measureMode ? "crosshair" : "";
+      map.getSource("measure-line").setData({ type: "FeatureCollection", features: [] });
+      map.getSource("measure-points").setData({ type: "FeatureCollection", features: [] });
       document.getElementById("measure-bar").classList.add("hidden");
-      if (measurePoints.length === 1) {
-        const m = L.circleMarker(measurePoints[0], {
-          radius: 5,
-          color: '#f472b6',
-          fillColor: '#f472b6',
-          fillOpacity: 1,
-          weight: 2,
-          stroke: true
-        }).addTo(map);
-        measureMarkers.push(m);
-      }
-    } else {
-      updateMeasureUi();
-    }
-  });
+    });
 
-  ready = true;
-  aircraftState = seedDemoAircraft();
-  lastUpdate = performance.now();
-  renderAircraft();
-  refreshAircraft();
-  setInterval(refreshAircraft, 4000);
-}
+    document.getElementById("btn-measure-clear").addEventListener("click", () => {
+      measurePoints = [];
+      map.getSource("measure-line").setData({ type: "FeatureCollection", features: [] });
+      map.getSource("measure-points").setData({ type: "FeatureCollection", features: [] });
+      document.getElementById("measure-bar").classList.add("hidden");
+    });
 
-document.getElementById("btn-labels").addEventListener("click", () => {
-  showLabels = !showLabels;
-  const btn = document.getElementById("btn-labels");
-  btn.classList.toggle("active", showLabels);
-  btn.textContent = showLabels ? "Fixes ON" : "Fixes OFF";
-  
-  if (showLabels) {
-    updateWaypointVisibility();
-    updateVortacVisibility();
-  } else {
-    waypointLayers.forEach(l => { if (map.hasLayer(l)) l.remove(); });
-    vortacLayers.forEach(l => { if (map.hasLayer(l)) l.remove(); });
-  }
-  
-  renderAircraft();
-});
+    initMap();
+    requestAnimationFrame(function tick() { renderAircraft(); requestAnimationFrame(tick); });
 
-document.getElementById("btn-measure").addEventListener("click", () => {
-  measureMode = !measureMode;
-  measurePoints = [];
-  if (measureLine) {
-    measureLine.remove();
-    measureLine = null;
-  }
-  measureMarkers.forEach(m => m.remove());
-  measureMarkers = [];
-  
-  const btn = document.getElementById("btn-measure");
-  btn.classList.toggle("measure-on", measureMode);
-  btn.textContent = measureMode ? "Measure ON" : "Measure";
-  
-  const mapCanvas = map.getContainer();
-  mapCanvas.style.cursor = measureMode ? "crosshair" : "";
-  document.getElementById("measure-bar").classList.add("hidden");
-});
-
-document.getElementById("btn-measure-clear").addEventListener("click", () => {
-  measurePoints = [];
-  if (measureLine) {
-    measureLine.remove();
-    measureLine = null;
-  }
-  measureMarkers.forEach(m => m.remove());
-  measureMarkers = [];
-  document.getElementById("measure-bar").classList.add("hidden");
-});
-
-initMap();
-requestAnimationFrame(function tick() { renderAircraft(); requestAnimationFrame(tick); });
-</script>
+  </script>
 </body>
+
 </html>

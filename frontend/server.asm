@@ -63,6 +63,7 @@ extern _radar_html
 %define write _write
 %define index_html _index_html
 %define radar_html _radar_html
+%define main _main
 
 %elifdef LINUX
 extern socket

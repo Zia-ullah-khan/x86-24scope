@@ -1,5 +1,5 @@
 ; ==============================================================================
-; x86-24scope OS - FAT32 Filesystem Driver (Read-Only with LFN support)
+; x86-24scope OS - FAT16/FAT32 Filesystem Driver (Read-Only with LFN support)
 ; ==============================================================================
 bits 64
 default rel
@@ -11,13 +11,15 @@ global fat32_open
 global fat32_read
 
 extern disk_read_sectors
+extern disk_get_base
+extern disk_get_size
 extern con_puts
 extern con_put_hex
 extern con_newline
 extern serial_puts
 extern serial_put_hex
 
-; FAT32 Directory Entry offsets
+; FAT Directory Entry offsets
 DIR_NAME            equ 0
 DIR_ATTR            equ 11
 DIR_FST_CLUS_HI     equ 20
@@ -26,58 +28,165 @@ DIR_FILE_SIZE       equ 28
 
 ; LFN Entry offsets
 LFN_SEQ             equ 0
-LFN_NAME1           equ 1           ; 5 characters (10 bytes)
-LFN_ATTR            equ 11          ; Always 0x0F
-LFN_NAME2           equ 14          ; 6 characters (12 bytes)
-LFN_NAME3           equ 28          ; 2 characters (4 bytes)
+LFN_NAME1           equ 1
+LFN_ATTR            equ 11
+LFN_NAME2           equ 14
+LFN_NAME3           equ 28
+
+; Sentinel: FAT16 fixed root directory (not a cluster chain)
+FAT16_ROOT_SENTINEL equ 0xFFFFFFFF
 
 fat32_init:
     push rbp
     mov rbp, rsp
-    sub rsp, 512                    ; Allocate 512-byte sector buffer
+    push rbx
+    push r12
+    sub rsp, 512
 
-    ; 1. Read Boot Sector (LBA 0)
-    xor rcx, rcx                    ; LBA = 0
-    mov rdx, 1                      ; Count = 1
-    mov r8, rsp                     ; Destination = stack buffer
-    call disk_read_sectors
+    call disk_get_base
     test rax, rax
     jz .error
+    mov r12, rax                    ; r12 = RAM disk base
 
-    ; 2. Parse BPB (BIOS Parameter Block)
-    movzx eax, word [rsp + 11]      ; Bytes Per Sector
+    call disk_get_size
+    shr rax, 9                      ; sector count (512-byte)
+    test rax, rax
+    jz .error
+    mov rbx, rax
+    cmp rbx, 4096
+    jbe .scan_cap
+    mov rbx, 4096
+.scan_cap:
+    xor ecx, ecx                    ; candidate LBA in ecx
+
+.scan_loop:
+    cmp rcx, rbx
+    jae .error
+
+    mov rax, rcx
+    shl rax, 9
+    lea rdx, [r12 + rax]            ; sector pointer
+
+    cmp word [rdx + 510], 0xAA55
+    jne .scan_next
+    cmp word [rdx + 11], 512
+    jne .scan_next
+
+    mov eax, [rdx + 54]
+    cmp eax, 'FAT1'
+    je .scan_hit
+    cmp eax, 'FAT3'
+    je .scan_hit
+
+    cmp word [rdx + 14], 0
+    je .scan_next
+    cmp byte [rdx + 16], 0
+    je .scan_next
+    cmp byte [rdx + 13], 0
+    je .scan_next
+    jmp .scan_hit
+
+.scan_next:
+    inc ecx
+    jmp .scan_loop
+
+.scan_hit:
+    mov [partition_lba], ecx
+
+    ; Copy BPB sector onto stack for stable parsing
+    mov rsi, rdx
+    mov rdi, rsp
+    push rcx
+    mov rcx, 64                     ; 512 bytes = 64 qwords
+    rep movsq
+    pop rcx
+
+    ; Bytes per sector (BPB offset 11)
+    movzx eax, word [rsp + 11]
+    test eax, eax
+    jz .error
     mov [bytes_per_sector], eax
-    
-    movzx eax, byte [rsp + 13]      ; Sectors Per Cluster
+
+    ; Sectors per cluster (offset 13)
+    movzx eax, byte [rsp + 13]
+    test eax, eax
+    jz .error
     mov [sectors_per_cluster], eax
 
-    movzx eax, word [rsp + 14]      ; Reserved Sectors Count
+    ; Reserved sectors (offset 14)
+    movzx eax, word [rsp + 14]
     mov [reserved_sectors], eax
 
-    movzx eax, byte [rsp + 16]      ; Number of FATs
+    ; Number of FATs (offset 16)
+    movzx eax, byte [rsp + 16]
     mov [num_fats], eax
 
-    mov eax, [rsp + 36]             ; Sectors Per FAT (FAT32)
+    ; Root entry count (offset 17) — non-zero means FAT12/FAT16
+    movzx eax, word [rsp + 17]
+    mov [root_dir_entries], eax
+
+    ; Sectors per FAT: FAT16 uses 16-bit at offset 22; FAT32 uses 32-bit at 36
+    movzx eax, word [rsp + 22]
+    test eax, eax
+    jnz .fat16
+
+    mov eax, [rsp + 36]
+    test eax, eax
+    jz .error
     mov [sectors_per_fat], eax
-
-    mov eax, [rsp + 44]             ; Root Cluster
+    mov eax, [rsp + 44]
     mov [root_cluster], eax
+    mov dword [is_fat16], 0
+    jmp .calc_layout
 
-    ; 3. Calculate Sector Locations
-    ; fat_start_sector = reserved_sectors
-    movzx eax, word [reserved_sectors]
+.fat16:
+    mov [sectors_per_fat], eax
+    mov dword [is_fat16], 1
+    mov dword [root_cluster], FAT16_ROOT_SENTINEL
+
+.calc_layout:
+    ; All LBAs below are relative to the FAT volume start, then biased by partition_lba
+    mov eax, [reserved_sectors]
+    add eax, [partition_lba]
     mov [fat_start_sector], eax
 
-    ; data_start_sector = reserved_sectors + num_fats * sectors_per_fat
-    movzx ecx, byte [num_fats]
+    mov eax, [reserved_sectors]
+    mov ecx, [num_fats]
     imul ecx, [sectors_per_fat]
     add eax, ecx
+    add eax, [partition_lba]
+    mov [root_start_sector], eax
+
+    ; root_dir_sectors = ceil(root_dir_entries * 32 / bytes_per_sector)
+    mov eax, [root_dir_entries]
+    shl eax, 5
+    mov ecx, [bytes_per_sector]
+    add eax, ecx
+    dec eax
+    xor edx, edx
+    div ecx
+    mov [root_dir_sectors], eax
+
+    ; data_start = root_start + root_dir_sectors
+    mov eax, [root_start_sector]
+    add eax, [root_dir_sectors]
     mov [data_start_sector], eax
 
-    ; Print success
-    lea rcx, [msg_fat_init]
+    cmp dword [is_fat16], 0
+    jne .msg16
+    lea rcx, [msg_fat32_init]
+    jmp .print
+.msg16:
+    lea rcx, [msg_fat16_init]
+.print:
     call con_puts
-    lea rcx, [msg_fat_init]
+    cmp dword [is_fat16], 0
+    jne .ser16
+    lea rcx, [msg_fat32_init]
+    jmp .ser
+.ser16:
+    lea rcx, [msg_fat16_init]
+.ser:
     call serial_puts
 
     mov rax, 1
@@ -92,6 +201,8 @@ fat32_init:
 
 .done:
     add rsp, 512
+    pop r12
+    pop rbx
     pop rbp
     ret
 
@@ -102,62 +213,82 @@ fat32_get_next_cluster:
     push rbp
     mov rbp, rsp
     push rbx
-    push rcx
-    push rdx
-    sub rsp, 512                    ; 512-byte sector buffer
+    push r12
+    push r13
+    sub rsp, 512
 
-    ; Offset in FAT = cluster * 4
-    mov rax, rcx
-    shl rax, 2                      ; rax = cluster * 4
-    
-    ; Sector of FAT = fat_start_sector + (offset / bytes_per_sector)
+    mov r12, rcx                    ; cluster
+
+    ; FAT16 fixed root has no chain
+    cmp r12d, FAT16_ROOT_SENTINEL
+    je .eoc
+
+    mov eax, [bytes_per_sector]
+    test eax, eax
+    jz .eoc
+    mov r13d, eax                   ; r13 = bytes per sector
+
+    ; Byte offset in FAT: cluster * 2 (FAT16) or cluster * 4 (FAT32)
+    mov rax, r12
+    cmp dword [is_fat16], 0
+    jne .off16
+    shl rax, 2
+    jmp .div_sec
+.off16:
+    shl rax, 1
+
+.div_sec:
     xor rdx, rdx
-    mov ecx, [bytes_per_sector]
+    mov rcx, r13
     div rcx                         ; rax = sector offset, rdx = byte offset
-    
-    add eax, [fat_start_sector]     ; Absolute LBA sector
-    
-    ; Read FAT sector
-    mov ecx, eax                    ; LBA
-    mov rdx, 1                      ; Count = 1
-    mov r8, rsp                     ; Buffer
-    push rdx
-    push rbx
+    mov ebx, edx                    ; ebx = offset within sector
+
+    add eax, [fat_start_sector]
+
+    mov ecx, eax
+    mov rdx, 1
+    mov r8, rsp
     call disk_read_sectors
-    pop rbx
-    pop rdx
     test rax, rax
-    jz .err
+    jz .eoc
 
-    ; Extract 32-bit entry
-    mov eax, [rsp + rdx]
-    and eax, 0x0FFFFFFF             ; Mask top 4 bits
-
+    cmp dword [is_fat16], 0
+    jne .read16
+    mov eax, [rsp + rbx]
+    and eax, 0x0FFFFFFF
+    cmp eax, 0x0FFFFFF8
+    jae .eoc
     jmp .done
 
-.err:
-    mov eax, 0x0FFFFFFF             ; Return End of Chain on error
+.read16:
+    movzx eax, word [rsp + rbx]
+    cmp eax, 0xFFF8
+    jae .eoc
+    jmp .done
+
+.eoc:
+    mov eax, 0x0FFFFFFF
 
 .done:
     add rsp, 512
-    pop rdx
-    pop rcx
+    pop r13
+    pop r12
     pop rbx
     pop rbp
     ret
 
 ; Convert cluster index to LBA sector
-; RCX = Cluster
+; RCX = Cluster (must be a real data cluster, not FAT16 root sentinel)
 ; Returns RAX = LBA Sector
 fat32_cluster_to_lba:
-    sub rcx, 2                      ; cluster - 2
-    movzx eax, byte [sectors_per_cluster]
-    imul rax, rcx                   ; (cluster - 2) * sectors_per_cluster
-    add rax, [data_start_sector]    ; add data_start_sector
+    sub rcx, 2
+    mov eax, [sectors_per_cluster]
+    imul rax, rcx
+    add rax, [data_start_sector]
     ret
 
 ; Traverse directory structures to open a file by path
-; RCX = Null-terminated ASCII path string (e.g. "/Plane Icons/737.png")
+; RCX = Null-terminated ASCII path string
 ; Returns RAX = Start Cluster, RDX = File Size (or 0 on not found)
 fat32_open:
     push rbp
@@ -169,11 +300,10 @@ fat32_open:
     push r13
     push r14
     push r15
-    sub rsp, 4096                   ; Allocate 4KB scratch sector buffer
+    sub rsp, 4096
 
-    mov r12, rcx                    ; r12 = current path pointer
-    
-    ; Skip leading slash
+    mov r12, rcx
+
     cmp byte [r12], '/'
     je .skip_slash
     cmp byte [r12], '\'
@@ -182,10 +312,9 @@ fat32_open:
     inc r12
 
 .start_traverse:
-    mov r13d, [root_cluster]        ; r13d = current directory cluster
+    mov r13d, [root_cluster]        ; current dir cluster (or FAT16 root sentinel)
 
 .next_component:
-    ; Extract next path component (up to '/' or '\' or 0)
     lea rdi, [comp_name]
     xor ecx, ecx
 
@@ -199,107 +328,103 @@ fat32_open:
     je .comp_done
     cmp ecx, 255
     jae .comp_done
-    
     mov [rdi + rcx], al
     inc rcx
     inc r12
     jmp .copy_comp
 
 .comp_done:
-    mov byte [comp_name + rcx], 0   ; Null terminate
+    mov byte [comp_name + rcx], 0
     test ecx, ecx
-    jz .found_target                ; If component is empty, we reached target!
+    jz .found_target
 
-    ; Check if there is another slash following
     mov al, [r12]
     cmp al, '/'
     je .skip_slash2
     cmp al, '\'
     je .skip_slash2
     jmp .search_dir
-
 .skip_slash2:
-    inc r12                         ; Advance past slash
+    inc r12
 
 .search_dir:
-    ; Search for comp_name in the directory starting at cluster r13d
-    ; Clear LFN buffer
     lea rdi, [lfn_name]
-    xor rax, rax
+    xor eax, eax
     mov rcx, 512
     rep stosb
 
+    ; FAT16 root: scan fixed root region
+    cmp r13d, FAT16_ROOT_SENTINEL
+    jne .read_dir_cluster
+
+    mov r14d, [root_start_sector]
+    mov r15d, [root_dir_sectors]
+    xor ebx, ebx
+    jmp .read_sector_loop
+
 .read_dir_cluster:
-    ; Convert directory cluster to LBA
     mov ecx, r13d
     call fat32_cluster_to_lba
-    mov r14, rax                    ; r14 = LBA start sector of cluster
-
-    ; Read cluster sectors
-    movzx r15d, byte [sectors_per_cluster]
-    xor rbx, rbx                    ; rbx = sector index in cluster
+    mov r14, rax
+    mov r15d, [sectors_per_cluster]
+    xor ebx, ebx
 
 .read_sector_loop:
     cmp ebx, r15d
     jae .next_cluster
 
-    ; Read sector
-    lea rcx, [r14 + rbx]            ; LBA
-    mov rdx, 1                      ; Count
-    mov r8, rsp                     ; Buffer (stack)
+    lea rcx, [r14 + rbx]
+    mov rdx, 1
+    mov r8, rsp
     call disk_read_sectors
     test rax, rax
     jz .not_found
 
-    ; Parse entries in sector (512 / 32 = 16 entries)
-    xor esi, esi                    ; esi = entry offset (0..511)
+    xor esi, esi
 
 .entry_loop:
     cmp esi, 512
     jae .next_sector
 
-    lea rbp, [rsp + rsi]            ; rbp = pointer to entry
+    ; Use r8 as entry pointer (do not clobber rbp)
+    lea r8, [rsp + rsi]
 
-    movzx eax, byte [rbp + DIR_NAME]
+    movzx eax, byte [r8 + DIR_NAME]
     test al, al
-    jz .not_found                   ; 0x00 = end of directory
+    jz .not_found
     cmp al, 0xE5
-    je .next_entry                  ; 0xE5 = deleted entry
+    je .next_entry
 
-    ; Check if LFN entry (Attribute = 0x0F)
-    mov al, [rbp + DIR_ATTR]
+    mov al, [r8 + DIR_ATTR]
     cmp al, 0x0F
     je .handle_lfn
 
-    ; It's a standard directory entry
-    ; Compare with comp_name
-    
-    ; Check if we have an assembled LFN
     cmp byte [lfn_name], 0
     jz .check_short_name
 
-    ; Compare LFN
+    push r8
     lea rcx, [lfn_name]
     lea rdx, [comp_name]
     call str_case_compare
+    pop r8
     test rax, rax
     jnz .match_found
-    jmp .clear_lfn
+    ; LFN present but did not match — still try the 8.3 name
+    jmp .check_short_name
 
 .check_short_name:
-    ; Convert short name to clean string (e.g. "PLANE   DIR" -> "PLANE", or "737     PNG" -> "737.png")
-    lea rcx, [rbp + DIR_NAME]
+    push r8
+    lea rcx, [r8 + DIR_NAME]
     lea rdx, [short_name_buf]
     call format_short_name
-
     lea rcx, [short_name_buf]
     lea rdx, [comp_name]
     call str_case_compare
+    pop r8
     test rax, rax
     jnz .match_found
 
 .clear_lfn:
-    ; Clear LFN buffer
     push rdi
     lea rdi, [lfn_name]
     xor rax, rax
@@ -309,53 +434,57 @@ fat32_open:
     jmp .next_entry
 
 .handle_lfn:
-    ; LFN entry
-    movzx edx, byte [rbp + LFN_SEQ]
-    and dl, 0x1F                    ; Mask sequence number (1..20)
-    dec dl                          ; 0-based index
-    imul edx, 13                    ; Offset in characters (13 chars per entry)
+    movzx edx, byte [r8 + LFN_SEQ]
+    mov eax, edx
+    and eax, 0x1F
+    test eax, eax
+    jz .next_entry                  ; invalid sequence 0
+    dec eax
+    imul eax, 13
+    cmp eax, 512 - 13
+    ja .next_entry
 
-    ; Extract 13 characters from LFN entry (convert UTF-16 to ASCII)
     lea rdi, [lfn_name]
-    add rdi, rdx                    ; Destination pointer
+    add rdi, rax
 
-    ; Chars 1-5 (offset 1, 10 bytes)
-    lea r8, [rbp + LFN_NAME1]
+    push r8
+    lea r8, [r8 + LFN_NAME1]
     mov ecx, 5
     call copy_utf16_to_ascii
+    pop r8
 
-    ; Chars 6-11 (offset 14, 12 bytes)
-    lea r8, [rbp + LFN_NAME2]
+    push r8
+    lea r8, [r8 + LFN_NAME2]
     mov ecx, 6
     call copy_utf16_to_ascii
+    pop r8
 
-    ; Chars 12-13 (offset 28, 4 bytes)
-    lea r8, [rbp + LFN_NAME3]
+    push r8
+    lea r8, [r8 + LFN_NAME3]
     mov ecx, 2
     call copy_utf16_to_ascii
+    pop r8
     jmp .next_entry
 
 .match_found:
-    ; Get starting cluster of matched entry
-    movzx eax, word [rbp + DIR_FST_CLUS_HI]
+    movzx eax, word [r8 + DIR_FST_CLUS_HI]
     shl eax, 16
-    movzx dx, word [rbp + DIR_FST_CLUS_LO]
-    or eax, edx                     ; eax = start cluster
-    
-    mov r13d, eax                   ; Save start cluster
+    movzx edx, word [r8 + DIR_FST_CLUS_LO]
+    or eax, edx
+    mov r13d, eax
 
-    ; Check if it is a directory or file
-    mov al, [rbp + DIR_ATTR]
-    and al, 0x10                    ; Subdirectory flag
+    mov al, [r8 + DIR_ATTR]
+    and al, 0x10
     jnz .is_dir
 
-    ; It's a file!
-    mov edx, [rbp + DIR_FILE_SIZE]  ; File size
-    mov eax, r13d                   ; File start cluster
+    mov edx, [r8 + DIR_FILE_SIZE]
+    mov eax, r13d
     jmp .found_target
 
 .is_dir:
-    ; It's a directory, continue to next path component
+    ; Subdirectory is always a cluster chain (even on FAT16)
+    test r13d, r13d
+    jz .not_found
     jmp .next_component
 
 .next_entry:
@@ -367,7 +496,9 @@ fat32_open:
     jmp .read_sector_loop
 
 .next_cluster:
-    ; Walk FAT to get next directory cluster
+    cmp r13d, FAT16_ROOT_SENTINEL
+    je .not_found                   ; fixed root exhausted
+
     mov ecx, r13d
     call fat32_get_next_cluster
     mov r13d, eax
@@ -377,13 +508,11 @@ fat32_open:
     jae .read_dir_cluster
 
 .not_found:
-    xor rax, rax                    ; File not found
+    xor rax, rax
     xor rdx, rdx
     jmp .done
 
 .found_target:
-    ; Returns cluster in RAX and size in RDX
-    ; If file is 0 bytes, make sure size is correct
 .done:
     add rsp, 4096
     pop r15
@@ -411,81 +540,74 @@ fat32_read:
     push r13
     push r14
     push r15
+    sub rsp, 16
+    mov [rsp], rdx                  ; original size
 
-    mov r12d, ecx                   ; r12d = current cluster
-    mov r13, rdx                    ; r13 = remaining size
-    mov r14, r8                     ; r14 = current destination pointer
-    
-    ; Calculate cluster size in bytes
-    movzx eax, byte [sectors_per_cluster]
+    mov r12d, ecx
+    mov r13, rdx
+    mov r14, r8
+
+    mov eax, [sectors_per_cluster]
     imul eax, [bytes_per_sector]
-    mov r15, rax                    ; r15 = cluster size (bytes)
+    test eax, eax
+    jz .error
+    mov r15, rax                    ; cluster size in bytes
 
 .cluster_loop:
     test r13, r13
     jz .success
     cmp r12d, 0x0FFFFFFF
     jae .success
+    cmp r12d, 2
+    jb .success
 
-    ; Convert cluster to LBA
     mov ecx, r12d
-    call fat32_cluster_to_lba       ; RAX = LBA sector
-    
-    ; Determine how much to read
-    mov rdx, r15                    ; Try to read full cluster
+    call fat32_cluster_to_lba
+
+    mov rdx, r15
     cmp r13, r15
     jae .read_full
-
-    ; Remaining size is less than a cluster. Read necessary sectors.
     mov rdx, r13
     add rdx, 511
-    shr rdx, 9                      ; rdx = sectors count = (r13 + 511) / 512
-
+    shr rdx, 9
 .read_full:
-    ; Read sectors
-    mov rcx, rax                    ; LBA
-    ; rdx is already sector count (for full cluster, rdx = sectors_per_cluster)
     cmp rdx, r15
     jne .read_partial_call
-    
-    movzx rdx, byte [sectors_per_cluster]
+    mov edx, [sectors_per_cluster]
 
 .read_partial_call:
-    mov r8, r14                     ; destination
+    mov rcx, rax
+    mov r8, r14
     push rdx
     call disk_read_sectors
     pop rdx
     test rax, rax
     jz .error
 
-    ; Update pointers and counters
     cmp r13, r15
     jae .sub_full
-
-    ; Subtracted partial
     add r14, r13
-    xor r13, r13                    ; Finished!
+    xor r13, r13
     jmp .success
 
 .sub_full:
     sub r13, r15
     add r14, r15
-    
-    ; Next cluster in chain
     mov ecx, r12d
     call fat32_get_next_cluster
     mov r12d, eax
     jmp .cluster_loop
 
 .success:
-    mov rax, [rsp + 8]              ; Original RDX (file size)
-    sub rax, r13                    ; RAX = bytes read
+    mov rax, [rsp]
+    sub rax, r13
     jmp .done
 
 .error:
     xor rax, rax
 
 .done:
+    add rsp, 16
     pop r15
     pop r14
     pop r13
@@ -496,10 +618,9 @@ fat32_read:
     pop rbp
     ret
 
-; String case-insensitive comparison helper
-; RCX = str1, RDX = str2
-; Returns RAX = 1 if match, 0 if mismatch
+; RCX = str1, RDX = str2 → RAX = 1 if equal (case-insensitive)
 str_case_compare:
+    push rbx
     push rsi
     push rdi
     mov rsi, rcx
@@ -510,54 +631,45 @@ str_case_compare:
     mov bl, [rdi]
     inc rdi
 
-    ; Convert AL to uppercase
     cmp al, 'a'
     jb .check_bl
     cmp al, 'z'
     ja .check_bl
     sub al, 32
-
 .check_bl:
-    ; Convert BL to uppercase
     cmp bl, 'a'
     jb .compare
     cmp bl, 'z'
     ja .compare
     sub bl, 32
-
 .compare:
     cmp al, bl
     jne .mismatch
     test al, al
     jnz .loop
-    
-    mov rax, 1                      ; Match
+    mov rax, 1
     jmp .done
-
 .mismatch:
-    xor rax, rax                    ; Mismatch
-
+    xor rax, rax
 .done:
     pop rdi
     pop rsi
+    pop rbx
     ret
 
-; Copy UTF-16 characters to ASCII
-; R8  = Source UTF-16 (2 bytes per char)
-; RCX = Char count
-; RDI = Destination ASCII
+; R8 = UTF-16 src, RCX = count, RDI = dest ASCII (advanced on return)
 copy_utf16_to_ascii:
     xor rdx, rdx
 .loop:
     cmp rdx, rcx
     jae .done
-    
-    movzx ax, word [r8 + rdx * 2]
+    movzx eax, word [r8 + rdx * 2]
     test ax, ax
     jz .done
+    cmp ax, 0xFFFF                  ; LFN padding — end of name
+    je .done
     cmp ax, 0x7F
-    ja .placeholder                 ; Replace non-ascii with placeholder
-    
+    ja .placeholder
     mov [rdi + rdx], al
     jmp .next
 .placeholder:
@@ -566,75 +678,72 @@ copy_utf16_to_ascii:
     inc rdx
     jmp .loop
 .done:
-    add rdi, rdx                    ; Advance RDI by characters written
+    add rdi, rdx
     ret
 
-; Format FAT short name to readable format (e.g. "PLANE   DIR" -> "PLANE", or "737     PNG" -> "737.png")
-; RCX = Source 11-byte name
-; RDX = Destination buffer
+; RCX = 11-byte short name, RDX = destination buffer
 format_short_name:
     push rsi
     push rdi
+    push rbx
     mov rsi, rcx
     mov rdi, rdx
-
-    ; Copy name part (up to 8 bytes, skip trailing spaces)
-    xor rcx, rcx                    ; char counter
+    xor ebx, ebx
 .name_loop:
-    cmp rcx, 8
+    cmp ebx, 8
     jae .check_ext
-    mov al, [rsi + rcx]
+    mov al, [rsi + rbx]
     cmp al, ' '
     je .name_space
     mov [rdi], al
     inc rdi
 .name_space:
-    inc rcx
+    inc ebx
     jmp .name_loop
-
 .check_ext:
-    ; Check extension (last 3 bytes)
     mov al, [rsi + 8]
     cmp al, ' '
     je .done_ext
-    
-    ; Add dot
     mov byte [rdi], '.'
     inc rdi
-
-    xor rcx, rcx
+    xor ebx, ebx
 .ext_loop:
-    cmp rcx, 3
+    cmp ebx, 3
     jae .done_ext
-    mov al, [rsi + 8 + rcx]
+    mov al, [rsi + 8 + rbx]
     cmp al, ' '
     je .ext_space
     mov [rdi], al
     inc rdi
 .ext_space:
-    inc rcx
+    inc ebx
     jmp .ext_loop
-
 .done_ext:
-    mov byte [rdi], 0               ; Null terminate
+    mov byte [rdi], 0
+    pop rbx
     pop rdi
     pop rsi
     ret
 
 section .data
-bytes_per_sector dd 512
-sectors_per_cluster db 8
-reserved_sectors dw 32
-num_fats db 2
-sectors_per_fat dd 0
-root_cluster dd 2
+align 4
+bytes_per_sector    dd 512
+sectors_per_cluster dd 8
+reserved_sectors    dd 32
+num_fats            dd 2
+sectors_per_fat     dd 0
+root_dir_entries    dd 0
+root_dir_sectors    dd 0
+root_cluster        dd 2
+fat_start_sector    dd 0
+root_start_sector   dd 0
+data_start_sector   dd 0
+partition_lba       dd 0
+is_fat16            dd 0
 
-fat_start_sector dd 0
-data_start_sector dd 0
-
-
-msg_fat_init db "FAT32: Mounted boot partition successfully.", 13, 10, 0
-msg_fat_err  db "FAT32: ERROR - Failed to mount boot partition!", 13, 10, 0
+msg_fat16_init db "FAT16: Mounted boot partition successfully.", 13, 10, 0
+msg_fat32_init db "FAT32: Mounted boot partition successfully.", 13, 10, 0
+msg_fat_err    db "FAT: ERROR - Failed to mount boot partition!", 13, 10, 0
 
 section .bss
 comp_name resb 256

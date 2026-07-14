@@ -85,6 +85,21 @@ pmm_init:
     mov rdx, 0x2000                 ; 0x2000 pages = 32MB
     call pmm_reserve_region
 
+    ; 4. Protect the RAM disk buffer passed from the bootloader.
+    ; ConventionalMemory descriptors still include those pages, so without
+    ; this reserve VMM page-table allocations overwrite the disk image with zeros.
+    mov rcx, [r12 + 64]             ; DiskBufferBase
+    mov rax, [r12 + 72]             ; DiskBufferSize
+    test rcx, rcx
+    jz .stats
+    test rax, rax
+    jz .stats
+    add rax, 4095
+    shr rax, 12                     ; page count
+    mov rdx, rax
+    call pmm_reserve_region
+
+.stats:
     ; Calculate and print statistics
     call pmm_recalculate_stats
 
@@ -271,10 +286,17 @@ pmm_recalculate_stats:
 
     mov rbx, [rdi + rcx * 8]
     not rbx                         ; Flip bits (free pages become 1)
-    
-    ; Count population (popcnt) of 1s in rbx
-    popcnt rdx, rbx
-    add rax, rdx
+
+    ; Count set bits manually (popcnt faults on CPUs without SSE4.2,
+    ; e.g. QEMU's default qemu64 model)
+.count_bits:
+    test rbx, rbx
+    jz .count_done
+    lea rdx, [rbx - 1]
+    and rbx, rdx                    ; Clear lowest set bit
+    inc rax
+    jmp .count_bits
+.count_done:
 
     inc rcx
     jmp .word_loop

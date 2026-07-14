@@ -21,6 +21,8 @@ extern con_put_hex
 extern con_newline
 extern serial_puts
 extern serial_put_hex
+extern wifi_recv_packet
+extern net_handle_packet
 
 ; ARP Cache structure: 16 entries
 ; Each entry is 16 bytes:
@@ -156,61 +158,58 @@ arp_cache_add:
     push rbx
     push rsi
     push rdi
+    push r9
+    push r10
 
-    ; 1. Search if IP is already in cache
+    mov r9, rcx                     ; preserve MAC pointer
+    mov r10d, edx                   ; preserve IP
+
     lea rbx, [arp_cache]
-    xor r8, r8                      ; Index counter
+    xor r8, r8
 
 .search_loop:
     cmp r8, CACHE_SIZE
     jae .add_new
 
     mov rcx, r8
-    shl rcx, 4                      ; rcx = r8 * 16
+    shl rcx, 4
     mov eax, [rbx + rcx + 0]
-    cmp eax, edx
+    cmp eax, r10d
     je .update_entry
 
     inc r8
     jmp .search_loop
 
 .update_entry:
-    ; Update MAC address of entry r8
-    mov rdi, rbx
-    mov rsi, rcx
-    mov rdx, r8
-    imul rdx, ENTRY_SIZE
-    add rdi, rdx
-    add rdi, 4                      ; Offset 4 = MAC
+    lea rdi, [rbx + rcx + 4]
+    mov rsi, r9
     mov rcx, 6
     rep movsb
+    mov rax, r8
+    shl rax, 4
+    mov byte [rbx + rax + 10], 1
     jmp .done
 
 .add_new:
-    ; Find an inactive or oldest entry to overwrite
-    ; For simplicity, we just use a round-robin index
     movzx r8d, byte [cache_next_index]
-    
-    mov rdi, rbx
-    mov rsi, rcx
     mov rcx, r8
-    imul rcx, ENTRY_SIZE
-    add rdi, rcx                    ; rdi = start of target entry
-
-    mov [rdi + 0], edx              ; IP
-    
-    add rdi, 4                      ; MAC
+    shl rcx, 4
+    lea rdi, [rbx + rcx]
+    mov [rdi + 0], r10d
+    lea rdi, [rbx + rcx + 4]
+    mov rsi, r9
     mov rcx, 6
     rep movsb
-
-    mov byte [rdi], 1               ; Flags = Active (rdi is already at offset 10 of entry)
-
-    ; Increment round-robin index
+    mov rax, r8
+    shl rax, 4
+    mov byte [rbx + rax + 10], 1
     inc r8d
-    and r8d, 15                     ; wrap to 0..15
+    and r8d, 15
     mov [cache_next_index], r8b
 
 .done:
+    pop r10
+    pop r9
     pop rdi
     pop rsi
     pop rbx
@@ -327,7 +326,16 @@ arp_resolve:
     jmp .poll_search
 
 .poll_sleep:
-    mov rcx, 10
+    ; Pump RX so ARP replies can update the cache
+    lea rcx, [arp_rx_buf]
+    call wifi_recv_packet
+    test rax, rax
+    jz .no_rx
+    lea rcx, [arp_rx_buf]
+    mov rdx, rax
+    call net_handle_packet
+.no_rx:
+    mov rcx, 5
     call sleep_ms
     jmp .poll_loop
 
@@ -351,3 +359,6 @@ cache_next_index db 0
 section .bss
 align 16
 arp_cache resb CACHE_SIZE * ENTRY_SIZE
+
+align 16
+arp_rx_buf resb 2048

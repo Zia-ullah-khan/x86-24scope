@@ -143,18 +143,28 @@ isr_common:
     call serial_put_hex
     call serial_newline
 
-    ; Print registers
+    ; Print registers (console + serial)
     lea rcx, [msg_rip]
     call con_puts
+    lea rcx, [msg_rip]
+    call serial_puts
     mov rcx, [rbp + 144]            ; RIP
     call con_put_hex
     call con_newline
+    mov rcx, [rbp + 144]
+    call serial_put_hex
+    call serial_newline
 
     lea rcx, [msg_rsp]
     call con_puts
+    lea rcx, [msg_rsp]
+    call serial_puts
     mov rcx, [rbp + 168]            ; RSP
     call con_put_hex
     call con_newline
+    mov rcx, [rbp + 168]
+    call serial_put_hex
+    call serial_newline
 
     cli
 .halt:

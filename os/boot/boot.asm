@@ -158,9 +158,16 @@ uefi_main:
     imul rax, rdx                           ; Size in bytes
     mov [disk_size_bytes], rax
 
-    ; Cap RAM disk copy. The El Torito device can report the whole 256MB
-    ; ISO; allocating/reading that on a small VM will fail or thrash.
-    mov r8, 32 * 1024 * 1024                ; 32MB max
+    ; Cap RAM disk copy. Need enough of efi_part.img that static assets
+    ; (Plane Icons, maps) are reachable — those currently sit ~160MB+ in.
+    ; Also enforce a minimum so tiny El Torito windows still get a FAT BPB.
+    mov r8, 2 * 1024 * 1024                 ; 2MB minimum
+    cmp rax, r8
+    jae .size_min_ok
+    mov rax, r8
+    mov [disk_size_bytes], rax
+.size_min_ok:
+    mov r8, 192 * 1024 * 1024               ; 192MB max (fits in 512MB VM)
     cmp rax, r8
     jbe .size_ok
     mov rax, r8
@@ -182,28 +189,75 @@ uefi_main:
     test rax, rax
     jnz .disk_read_done
 
-    ; Read sectors
+    ; ReadBlocks (EFI_BLOCK_IO_PROTOCOL.ReadBlocks @ offset 24).
+    ; Try LBA 0 first (El Torito boot-image window starts at FAT BPB).
+    ; If that has no FAT signature, retry ISO LBA 21 (whole-CD BlockIo).
     mov rsi, [block_io]
-    mov rax, [rsi + 16]                     ; ReadBlocks (offset 16)
-    
+    mov rax, [rsi + 24]                     ; ReadBlocks
     mov r11, [block_io]
     mov rdi, [r11 + 8]                      ; Media
     mov edx, [rdi]                          ; MediaId
-    
-    mov rcx, r11                            ; This
-    xor r8, r8                              ; LBA = 0
-    mov r9, [disk_size_bytes]               ; Size
+
+    sub rsp, 64
+    mov rcx, r11
+    xor r8, r8                              ; LBA 0
+    mov r9, [disk_size_bytes]
     mov r10, [disk_buffer_ptr]
-    mov [rsp + 32], r10                     ; Buffer
-    call rax                                ; Call ReadBlocks
+    mov [rsp + 32], r10
+    call rax
+    add rsp, 64
+    test rax, rax
+    jnz .try_iso_lba21
+
+    mov rsi, [disk_buffer_ptr]
+    cmp word [rsi + 510], 0xAA55
+    jne .try_iso_lba21
+    cmp word [rsi + 11], 512
+    je .read_ok
+
+.try_iso_lba21:
+    ; Whole ISO9660 device: FAT lives at 2048-byte LBA 21
+    cmp dword [block_size], 2048
+    jne .disk_read_done
+    mov rsi, [block_io]
+    mov rax, [rsi + 24]
+    mov r11, [block_io]
+    mov rdi, [r11 + 8]
+    mov edx, [rdi]
+    sub rsp, 64
+    mov rcx, r11
+    mov r8, 21
+    mov r9, [disk_size_bytes]
+    mov r10, [disk_buffer_ptr]
+    mov [rsp + 32], r10
+    call rax
+    add rsp, 64
     test rax, rax
     jnz .disk_read_done
 
+.read_ok:
     ; Save to BootInfo
     mov rax, [disk_buffer_ptr]
     mov [boot_info + 64], rax
     mov rax, [disk_size_bytes]
     mov [boot_info + 72], rax
+
+    ; Verify the RAM disk actually contains a FAT BPB (or ISO+FAT).
+    mov rsi, [disk_buffer_ptr]
+    cmp word [rsi + 510], 0xAA55
+    je .disk_sig_ok
+    cmp word [rsi + 43008 + 510], 0xAA55
+    je .disk_sig_ok
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [dbg_disk_nosig]
+    call uefi_print
+    jmp .disk_read_done
+.disk_sig_ok:
+    mov rdx, [system_table]
+    mov rcx, [rdx + SYSTEM_TABLE_CON_OUT]
+    lea rdx, [dbg_disk_sigok]
+    call uefi_print
 
 .disk_read_done:
     ; Debug: print disk done
@@ -409,6 +463,10 @@ dbg_disk:
     dw '[', '2', ']', ' ', 'D', 'i', 's', 'k', ' ', 'r', 'e', 'a', 'd', '.', '.', '.', 13, 10, 0
 dbg_disk_done:
     dw '[', '3', ']', ' ', 'D', 'i', 's', 'k', ' ', 'd', 'o', 'n', 'e', 13, 10, 0
+dbg_disk_sigok:
+    dw '[', '3', 'a', ']', ' ', 'D', 'i', 's', 'k', ' ', 'F', 'A', 'T', ' ', 's', 'i', 'g', ' ', 'O', 'K', 13, 10, 0
+dbg_disk_nosig:
+    dw '[', '3', 'a', ']', ' ', 'D', 'i', 's', 'k', ' ', 'F', 'A', 'T', ' ', 's', 'i', 'g', ' ', 'M', 'I', 'S', 'S', 13, 10, 0
 dbg_acpi_done:
     dw '[', '4', ']', ' ', 'A', 'C', 'P', 'I', ' ', 'd', 'o', 'n', 'e', 13, 10, 0
 dbg_exit_bs:

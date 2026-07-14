@@ -58,6 +58,15 @@ if errorlevel 1 goto error
 "C:\Program Files\NASM\nasm.exe" -f win64 os\net\crypto.asm -o build\crypto.obj
 if errorlevel 1 goto error
 
+"C:\Program Files\NASM\nasm.exe" -f win64 os\net\netdev.asm -o build\netdev.obj
+if errorlevel 1 goto error
+
+"C:\Program Files\NASM\nasm.exe" -f win64 os\drivers\net\loopback.asm -o build\loopback.obj
+if errorlevel 1 goto error
+
+"C:\Program Files\NASM\nasm.exe" -f win64 os\drivers\net\e1000.asm -o build\e1000.obj
+if errorlevel 1 goto error
+
 "C:\Program Files\NASM\nasm.exe" -f win64 os\drivers\wifi\iwl_dev.asm -o build\iwl_dev.obj
 if errorlevel 1 goto error
 
@@ -104,7 +113,7 @@ if errorlevel 1 goto error
 if errorlevel 1 goto error
 
 echo Linking UEFI Application...
-"C:\Users\khans\Desktop\GoLink.exe" /entry uefi_main /largeaddressaware /base 0x400000 build\boot.obj build\kernel.obj build\gdt.obj build\idt.obj build\pmm.obj build\vmm.obj build\console.obj build\font8x16.obj build\serial.obj build\apic.obj build\timer.obj build\pci.obj build\acpi.obj build\disk.obj build\fat32.obj build\crypto.obj build\iwl_dev.obj build\iwl_fw.obj build\iwl_cmd.obj build\iwl_scan.obj build\iwl_connect.obj build\ieee80211.obj build\arp.obj build\ip.obj build\udp.obj build\dhcp.obj build\tcp.obj build\http.obj build\index.obj build\radar.obj build\tui.obj /fo build\BOOTX64.EFI
+"C:\Users\khans\Desktop\GoLink.exe" /entry uefi_main /largeaddressaware /base 0x400000 build\boot.obj build\kernel.obj build\gdt.obj build\idt.obj build\pmm.obj build\vmm.obj build\console.obj build\font8x16.obj build\serial.obj build\apic.obj build\timer.obj build\pci.obj build\acpi.obj build\disk.obj build\fat32.obj build\crypto.obj build\netdev.obj build\loopback.obj build\e1000.obj build\iwl_dev.obj build\iwl_fw.obj build\iwl_cmd.obj build\iwl_scan.obj build\iwl_connect.obj build\ieee80211.obj build\arp.obj build\ip.obj build\udp.obj build\dhcp.obj build\tcp.obj build\http.obj build\index.obj build\radar.obj build\tui.obj /fo build\BOOTX64.EFI
 if errorlevel 1 goto error
 
 echo Patching PE headers for UEFI subsystem...

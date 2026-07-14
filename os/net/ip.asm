@@ -68,19 +68,18 @@ ip_handle_packet:
     ; Verify destination IP matches our IP (or broadcast)
     mov r8d, [rsi + IP_DST_IP]
     call dhcp_get_our_ip            ; eax = our IP
+    test eax, eax
+    jz .our_packet                  ; unbound: accept all (DHCP bring-up)
     cmp r8d, eax
     je .our_packet
     cmp r8d, 0xFFFFFFFF             ; Broadcast
     je .our_packet
-    
-    ; Check if destination is 0.0.0.0 (used during DHCP init)
-    test r8d, r8d
-    jnz .done
+    jmp .done
 
 .our_packet:
-    ; Protocol dispatch
-    movzx eax, byte [rsi + IP_PROTO]
-    
+    ; Save IP protocol BEFORE reading total length (which overwrites AL)
+    movzx r10d, byte [rsi + IP_PROTO]
+
     movzx eax, word [rsi + IP_TOT_LEN]
     xchg al, ah                     ; Convert big endian to little endian
     movzx r9d, ax
@@ -90,11 +89,11 @@ ip_handle_packet:
     lea rcx, [rsi + rbx]            ; rcx = start of payload
     mov rdx, r9                     ; rdx = payload size
 
-    cmp al, 1                       ; ICMP
+    cmp r10b, 1                     ; ICMP
     je .handle_icmp
-    cmp al, 17                      ; UDP
+    cmp r10b, 17                    ; UDP
     je .handle_udp
-    cmp al, 6                       ; TCP
+    cmp r10b, 6                     ; TCP
     je .handle_tcp
     jmp .done
 
@@ -200,7 +199,7 @@ ip_send:
     push r13
     push r14
     push r15
-    sub rsp, 2048                   ; Buffer for IP Header + Payload
+    sub rsp, 1600                   ; Buffer for one MTU-sized IP packet
 
     mov r12d, ecx                   ; Dest IP
     mov r13d, edx                   ; Protocol
@@ -215,7 +214,13 @@ ip_send:
     mov ecx, r12d
     call arp_resolve
     test rax, rax
-    jz .error                       ; ARP resolution failed, drop packet
+    jnz .arp_ok
+    push rcx
+    lea rcx, [msg_arp_fail]
+    call serial_puts
+    pop rcx
+    jmp .error
+.arp_ok:
 
     mov rbx, rax                    ; rbx = Pointer to 6-byte MAC address
     jmp .build_packet
@@ -282,6 +287,10 @@ ip_send:
     lea r8, [rsp + 0]               ; Payload
     mov r9, r15
     add r9, 20                      ; Size = Header + Payload
+    push rcx
+    lea rcx, [msg_ip_tx]
+    call serial_puts
+    pop rcx
     call eth_send_packet
     
     mov rax, 1                      ; Success
@@ -291,7 +300,7 @@ ip_send:
     xor rax, rax                    ; Failure
 
 .done:
-    add rsp, 2048
+    add rsp, 1600
     pop r15
     pop r14
     pop r13
@@ -352,6 +361,8 @@ ip_get_checksum:
     ret
 
 section .data
+msg_arp_fail db "ARP-FAIL", 13, 10, 0
+msg_ip_tx db "IP-TX", 13, 10, 0
 align 8
 ip_broadcast_mac db 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 ip_id_counter dw 0

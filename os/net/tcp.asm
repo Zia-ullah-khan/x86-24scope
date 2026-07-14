@@ -51,6 +51,7 @@ TCP_FLAG_ACK            equ 0x10
 
 MAX_SOCKETS equ 8
 SOCKET_SIZE equ 64
+TCP_MSS     equ 1400                ; keep under Ethernet MTU / ip_send buffer
 
 tcp_init:
     push rdi
@@ -72,14 +73,16 @@ tcp_init:
 ; RCX = Port
 tcp_listen:
     push rbx
-    
+    push r12
+    mov r12, rcx                    ; preserve port (rcx is reused below)
+
     ; Find free socket
     lea rbx, [tcp_sockets]
     xor rdx, rdx
 .loop:
     cmp rdx, MAX_SOCKETS
     jae .fail
-    
+
     mov rcx, rdx
     shl rcx, 6                      ; rcx = rdx * 64
     mov al, [rbx + rcx + 0]
@@ -95,7 +98,7 @@ tcp_listen:
     add rbx, r8
 
     mov byte [rbx + 0], TCP_STATE_LISTEN
-    mov [rbx + 2], cx               ; Save port
+    mov [rbx + 2], r12w             ; Save port
 
     ; Allocate page for receive buffer
     extern pmm_alloc_page
@@ -111,6 +114,7 @@ tcp_listen:
     xor rax, rax                    ; Error
 
 .done:
+    pop r12
     pop rbx
     ret
 
@@ -168,6 +172,7 @@ tcp_accept:
 ; RCX = Socket ID
 ; RDX = Buffer pointer
 ; R8  = Length
+; Segments into TCP_MSS chunks so IP/Ethernet stay under MTU.
 tcp_send:
     push rbp
     mov rbp, rsp
@@ -178,13 +183,13 @@ tcp_send:
     push r13
     push r14
     push r15
-    sub rsp, 4096                   ; Buffer for TCP segments
+    sub rsp, 2048                   ; one TCP segment (header + MSS)
 
     mov r12d, ecx                   ; Socket ID
     mov r13, rdx                    ; Buffer
-    mov r14, r8                     ; Length
+    mov r14, r8                     ; Remaining length
+    xor r15, r15                    ; Total sent
 
-    ; Check Socket state
     lea rbx, [tcp_sockets]
     mov r8, r12
     imul r8, SOCKET_SIZE
@@ -194,77 +199,78 @@ tcp_send:
     cmp al, TCP_STATE_ESTABLISHED
     jne .error
 
-    ; Send TCP segment with PSH | ACK
-    lea rdi, [rsp + 0]              ; rdi = Start of TCP packet
+    test r14, r14
+    jz .success
 
-    ; Source Port
+.chunk_loop:
+    mov rax, r14
+    cmp rax, TCP_MSS
+    jbe .chunk_size
+    mov rax, TCP_MSS
+.chunk_size:
+    mov r12, rax                    ; r12 = this chunk length
+
+    lea rdi, [rsp + 0]
+
     mov ax, [rbx + 2]
     xchg al, ah
     mov [rdi + 0], ax
 
-    ; Destination Port
     mov ax, [rbx + 4]
     xchg al, ah
     mov [rdi + 2], ax
 
-    ; Sequence Number
-    mov eax, [rbx + 12]             ; Local Seq
-    xchg al, ah
-    rol eax, 16                     ; To big endian
+    mov eax, [rbx + 12]
+    bswap eax
     mov [rdi + 4], eax
 
-    ; Acknowledgment Number
-    mov eax, [rbx + 16]             ; Remote Seq
-    xchg al, ah
-    rol eax, 16
+    mov eax, [rbx + 16]
+    bswap eax
     mov [rdi + 8], eax
 
-    ; Data Offset (Header length = 20 bytes = 5 dwords -> 0x50)
     mov byte [rdi + 12], 0x50
-    ; Flags = ACK | PSH
     mov byte [rdi + 13], TCP_FLAG_ACK | TCP_FLAG_PSH
-    ; Window Size = 8192 (0x2000 big endian)
     mov word [rdi + 14], 0x0020
-    ; Checksum = 0
     mov word [rdi + 16], 0
-    ; Urgent pointer = 0
     mov word [rdi + 18], 0
 
-    ; Copy Payload immediately after header
     lea rdi, [rsp + 20]
     mov rsi, r13
-    mov rcx, r14
+    mov rcx, r12
     rep movsb
 
-    ; Calculate Checksum with Pseudo Header
-    lea rcx, [rsp + 0]              ; TCP Start
-    mov rdx, r14
-    add rdx, 20                     ; TCP Length
-    mov r8d, [rbx + 8]              ; Dest IP
+    lea rcx, [rsp + 0]
+    mov rdx, r12
+    add rdx, 20
+    mov r8d, [rbx + 8]
     call tcp_calculate_checksum
-    mov [rsp + 16], ax              ; Write checksum
+    mov [rsp + 16], ax
 
-    ; Send via IP layer
-    mov ecx, [rbx + 8]              ; Dest IP
-    mov edx, 6                      ; Protocol = 6 (TCP)
-    lea r8, [rsp + 0]               ; TCP packet pointer
-    mov r9, r14
-    add r9, 20                      ; Length
+    mov ecx, [rbx + 8]
+    mov edx, 6
+    lea r8, [rsp + 0]
+    mov r9, r12
+    add r9, 20
     call ip_send
 
-    ; Advance local sequence number by length sent
     mov eax, [rbx + 12]
-    add eax, r14d
+    add eax, r12d
     mov [rbx + 12], eax
 
-    mov rax, r14                    ; Return length sent
+    add r13, r12
+    add r15, r12
+    sub r14, r12
+    jnz .chunk_loop
+
+.success:
+    mov rax, r15
     jmp .done
 
 .error:
     xor rax, rax
 
 .done:
-    add rsp, 4096
+    add rsp, 2048
     pop r15
     pop r14
     pop r13
@@ -283,6 +289,10 @@ tcp_recv:
     push rbx
     push rsi
     push rdi
+    push r12
+
+    mov rdi, rdx                    ; preserve destination buffer
+    mov r12, r8                     ; preserve max length
 
     lea rbx, [tcp_sockets]
     imul rcx, SOCKET_SIZE
@@ -292,25 +302,29 @@ tcp_recv:
     test rsi, rsi
     jz .empty
 
-    mov edx, [rbx + 32]             ; Write pointer
+    mov eax, [rbx + 32]             ; Write pointer
     mov ecx, [rbx + 36]             ; Read pointer
 
-    cmp ecx, edx
+    cmp ecx, eax
     je .empty
 
-    ; Determine bytes available
-    mov r8d, edx
-    sub r8d, ecx                    ; r8d = size
+    ; Bytes available
+    mov r8d, eax
+    sub r8d, ecx
+    cmp r8, r12
+    jbe .copy_size
+    mov r8, r12                     ; clamp to caller max
 
-    mov rdi, rdx                    ; Save destination (RDX argument)
-    
+.copy_size:
     ; Copy to destination
     lea rsi, [rsi + rcx]            ; Source pointer
     mov rcx, r8                     ; Count
     rep movsb
 
-    ; Update Read Pointer (clear buffer)
-    mov [rbx + 36], edx
+    ; Advance read pointer by bytes copied
+    mov ecx, [rbx + 36]
+    add ecx, r8d
+    mov [rbx + 36], ecx
 
     mov rax, r8                     ; Return size read
     jmp .done
@@ -319,6 +333,7 @@ tcp_recv:
     xor rax, rax
 
 .done:
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -357,13 +372,11 @@ tcp_close:
     mov [rdi + 2], ax
 
     mov eax, [rbx + 12]             ; Seq
-    xchg al, ah
-    rol eax, 16
+    bswap eax
     mov [rdi + 4], eax
 
     mov eax, [rbx + 16]             ; Ack
-    xchg al, ah
-    rol eax, 16
+    bswap eax
     mov [rdi + 8], eax
 
     mov byte [rdi + 12], 0x50
@@ -386,7 +399,15 @@ tcp_close:
     mov r9, 20
     call ip_send
 
-    mov byte [rbx + 0], TCP_STATE_LAST_ACK
+    ; Connection socket — mark closed (listener stays in LISTEN separately)
+    mov byte [rbx + 0], TCP_STATE_CLOSED
+    mov byte [rbx + 1], 0
+    mov word [rbx + 4], 0
+    mov dword [rbx + 8], 0
+    mov dword [rbx + 12], 0
+    mov dword [rbx + 16], 0
+    mov dword [rbx + 32], 0
+    mov dword [rbx + 36], 0
     jmp .done
 
 .just_close:
@@ -416,6 +437,11 @@ tcp_handle_packet:
     push r15
 
     mov rsi, rcx                    ; rsi = TCP start
+    push rcx
+    lea rcx, [msg_tcp_pkt]
+    call serial_puts
+    pop rcx
+    mov rsi, rcx
     mov r12, rdx                    ; r12 = length
     mov r13d, r8d                   ; r13d = Src IP
     mov r14d, r9d                   ; r14d = Dst IP
@@ -433,13 +459,11 @@ tcp_handle_packet:
 
     ; Extract Seq/Ack
     mov eax, [rsi + 4]
-    xchg al, ah
-    rol eax, 16                     ; eax = Seq (little endian)
+    bswap eax                     ; eax = Seq (little endian)
     mov r15d, eax                   ; r15d = incoming Seq
 
     mov eax, [rsi + 8]
-    xchg al, ah
-    rol eax, 16                     ; eax = Ack (little endian)
+    bswap eax                     ; eax = Ack (little endian)
     mov r10d, eax                   ; r10d = incoming Ack
 
     ; Get header length (offset is at byte 12)
@@ -475,10 +499,17 @@ tcp_handle_packet:
     cmp r10d, ecx
     jne .next
 
-    ; If ESTABLISHED, we also check remote IP and Port
+    ; LISTEN sockets are handled in .handle_new_conn (SYN path).
+    ; Matching them here would swallow SYNs without spawning.
     mov r10b, [r11 + 0]
+    cmp r10b, TCP_STATE_LISTEN
+    je .next
+
+    cmp r10b, TCP_STATE_SYN_RECEIVED
+    je .process_state
+
     cmp r10b, TCP_STATE_ESTABLISHED
-    jne .process_state
+    jne .next
 
     mov r10d, [r11 + 8]             ; Remote IP
     cmp r10d, r13d
@@ -521,22 +552,70 @@ tcp_handle_packet:
     jmp .listen_search
 
 .spawn_socket:
-    ; To keep things simple, we transition the listener socket itself to SYN_RECEIVED,
-    ; and configure it with the client parameters!
-    ; (Typically we allocate a new socket, but for a single port listener, this works perfectly!)
+    ; Allocate a free socket for this connection; keep the listener in LISTEN
+    ; so the browser can open multiple image requests in parallel.
+    push r12
+    push r14
+    mov r14, r11                    ; r14 = listener socket
+
+    lea rdi, [tcp_sockets]
+    xor rdx, rdx
+.find_free:
+    cmp rdx, MAX_SOCKETS
+    jae .spawn_busy
+
+    mov r11, rdx
+    imul r11, SOCKET_SIZE
+    lea r11, [rdi + r11]
+    cmp byte [r11 + 0], TCP_STATE_CLOSED
+    je .spawn_found
+    inc rdx
+    jmp .find_free
+
+.spawn_busy:
+    pop r14
+    pop r12
+    jmp .done
+
+.spawn_found:
+    lea rcx, [msg_tcp_syn]
+    call serial_puts
+
+    movzx r12d, word [r14 + 2]      ; local port from listener
+
     mov byte [r11 + 0], TCP_STATE_SYN_RECEIVED
+    mov byte [r11 + 1], 0           ; not yet accepted by http
+    mov [r11 + 2], r12w             ; Local Port
     mov [r11 + 4], bx               ; Remote Port
     mov [r11 + 8], r13d             ; Remote IP
-    mov dword [r11 + 12], 1000      ; Local Seq = 1000
-    
+    mov dword [r11 + 12], 1000      ; Local Seq
     mov r10d, r15d
-    inc r10d                        ; Remote Seq = incoming Seq + 1
-    mov [r11 + 16], r10d
+    inc r10d
+    mov [r11 + 16], r10d            ; Remote Seq
 
-    ; Send SYN-ACK
+    ; Recv buffer: reuse listener page if child has none — allocate fresh
+    cmp qword [r11 + 24], 0
+    jne .spawn_buf_ok
+    extern pmm_alloc_page
+    call pmm_alloc_page
+    test rax, rax
+    jz .spawn_busy_free
+    mov [r11 + 24], rax
+.spawn_buf_ok:
+    mov dword [r11 + 32], 0
+    mov dword [r11 + 36], 0
+
     lea rcx, [r11]
     mov edx, TCP_FLAG_SYN | TCP_FLAG_ACK
     call tcp_send_control
+    pop r14
+    pop r12
+    jmp .done
+
+.spawn_busy_free:
+    mov byte [r11 + 0], TCP_STATE_CLOSED
+    pop r14
+    pop r12
     jmp .done
 
 .process_state:
@@ -546,12 +625,23 @@ tcp_handle_packet:
     cmp r10b, TCP_STATE_SYN_RECEIVED
     jne .check_established
 
+    ; Retransmitted SYN: resend SYN-ACK
+    test al, TCP_FLAG_SYN
+    jz .synrecv_ack
+    lea rcx, [r11]
+    mov edx, TCP_FLAG_SYN | TCP_FLAG_ACK
+    call tcp_send_control
+    jmp .done
+
+.synrecv_ack:
     ; Expecting ACK (flags at eax)
     test al, TCP_FLAG_ACK
     jz .done
 
     ; Transition to ESTABLISHED!
     mov byte [r11 + 0], TCP_STATE_ESTABLISHED
+    lea rcx, [msg_tcp_est]
+    call serial_puts
     jmp .done
 
 .check_established:
@@ -577,27 +667,20 @@ tcp_handle_packet:
 .process_data:
     ; Check if payload length > 0
     test r9d, r9d
-    jz .done
+    jz .ack_only
 
-    ; Copy data to receive buffer
-    mov rsi, [r11 + 24]             ; Page base address
-    test rsi, rsi
-    jz .ack_only                    ; Drop data if no buffer allocated
+    ; rsi still points at TCP header; payload is at rsi + header_len
+    lea r10, [rsi + r8]             ; r10 = payload source
 
-    mov ecx, [r11 + 32]             ; Write pointer
-    lea rdi, [rsi + rcx]            ; Destination
-    
-    ; Copy payload from packet
-    mov rdx, rsi                    ; rdx = TCP start
-    movzx r8d, r8b
-    add rdx, r8                     ; rdx = Source payload address
+    mov rdi, [r11 + 24]             ; recv page
+    test rdi, rdi
+    jz .ack_only
 
-    mov rdi, [r11 + 24]             ; Page base
-    mov ecx, [r11 + 32]             ; Write pointer
-    add rdi, rcx                    ; rdi = Destination
+    mov eax, [r11 + 32]             ; write pointer
+    add rdi, rax                    ; destination
 
-    mov rsi, rdx                    ; rsi = Source
-    mov rcx, r9                     ; rcx = payload length
+    mov rsi, r10
+    mov rcx, r9
     rep movsb
 
     ; Update Write Pointer
@@ -666,14 +749,12 @@ tcp_send_control:
 
     ; Seq
     mov eax, [rbx + 12]
-    xchg al, ah
-    rol eax, 16
+    bswap eax
     mov [rdi + 4], eax
 
     ; Ack
     mov eax, [rbx + 16]
-    xchg al, ah
-    rol eax, 16
+    bswap eax
     mov [rdi + 8], eax
 
     ; Header Len (20 bytes = 5 dwords -> 0x50)
@@ -789,6 +870,11 @@ tcp_calculate_checksum:
     pop rbx
     pop rbp
     ret
+
+section .data
+msg_tcp_syn db "TCP: SYN received, sending SYN-ACK", 13, 10, 0
+msg_tcp_pkt db "TCP-PKT", 13, 10, 0
+msg_tcp_est db "TCP: ESTABLISHED", 13, 10, 0
 
 section .bss
 align 16

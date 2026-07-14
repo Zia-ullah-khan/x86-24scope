@@ -167,4 +167,5 @@ kernel_stack_bottom:
 kernel_stack_top:
 
 align 16
+global network_rx_buffer
 network_rx_buffer resb 2048

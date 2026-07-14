@@ -15,6 +15,8 @@ global dhcp_is_bound
 
 extern udp_send
 extern wifi_get_mac
+extern wifi_recv_packet
+extern net_handle_packet
 extern con_puts
 extern con_put_dec
 extern con_newline
@@ -77,14 +79,23 @@ dhcp_init:
     cmp rax, rbx
     jae .fallback
 
-    mov rcx, 50
+    ; Must pump RX or DHCP replies / ARP never arrive
+    lea rcx, [dhcp_rx_buf]
+    call wifi_recv_packet
+    test rax, rax
+    jz .no_rx
+    lea rcx, [dhcp_rx_buf]
+    mov rdx, rax
+    call net_handle_packet
+.no_rx:
+    mov rcx, 10
     call sleep_ms
     jmp .poll_loop
 
 .fallback:
-    ; Fallback to Static IP configuration
-    mov dword [our_ip], 0x2A01A8C0   ; 192.168.1.42 (little endian)
-    mov dword [gateway_ip], 0x0101A8C0 ; 192.168.1.1
+    ; QEMU user-networking default guest address (hostfwd targets this)
+    mov dword [our_ip], 0x0F02000A   ; 10.0.2.15
+    mov dword [gateway_ip], 0x0202000A ; 10.0.2.2
     mov dword [subnet_mask], 0x00FFFFFF ; 255.255.255.0
     mov byte [dhcp_state], STATE_BOUND
 
@@ -421,6 +432,10 @@ dhcp_print_config:
 print_ip:
     push rbx
     mov ebx, ecx
+    ; Also dump raw LE dword to serial for debugging
+    push rcx
+    call serial_put_hex
+    pop rcx
 
     ; Byte 1
     movzx ecx, bl
@@ -490,3 +505,7 @@ msg_ip db "  IP Address:  ", 0
 msg_mask db "  Subnet Mask: ", 0
 msg_gw db "  Gateway IP:  ", 0
 dhcp_newline db 13, 10, 0
+
+section .bss
+align 16
+dhcp_rx_buf resb 2048

@@ -99,72 +99,100 @@ def make_fat16_image(image_path, src_dir, size_mb=16):
         img_data[offset : offset + len(data)] = data
 
     # 2. Build Directory tree and files
-    # Helper to format short name (8.3)
     def format_short_name(name, is_dir=False):
         name = name.upper()
         if is_dir:
-            parts = [name]
+            base = name.replace(" ", "")[:8]
             ext = ""
         else:
             parts = name.rsplit(".", 1)
-            ext = parts[1] if len(parts) > 1 else ""
-        
-        base = parts[0].replace(" ", "")[:8]
-        ext = ext.replace(" ", "")[:3]
-        
+            base = parts[0].replace(" ", "")[:8]
+            ext = parts[1].replace(" ", "")[:3] if len(parts) > 1 else ""
         return f"{base:<8}{ext:<3}".encode("ascii", "ignore")
 
-    # Add files/dirs recursively
-    def add_to_directory(dir_offset, local_path):
+    def short_name_checksum(short_name):
+        s = 0
+        for b in short_name:
+            s = ((s & 1) << 7) + (s >> 1) + b
+            s &= 0xFF
+        return s
+
+    def write_lfn_entries(dir_offset, entry_idx, long_name, short_name):
+        """Write FAT long-file-name entries; returns next entry index."""
+        name_utf16 = long_name.encode("utf-16-le") + b"\x00\x00"
+        # Pad to 13-char (26-byte) chunks
+        while len(name_utf16) % 26:
+            name_utf16 += b"\xFF\xFF"
+        chunks = [name_utf16[i:i + 26] for i in range(0, len(name_utf16), 26)]
+        checksum = short_name_checksum(short_name)
+        # On disk: last chunk first, with 0x40 bit on the first-written (highest seq)
+        for seq_idx, chunk in enumerate(reversed(chunks)):
+            seq = len(chunks) - seq_idx
+            if seq_idx == 0:
+                seq |= 0x40
+            eoff = dir_offset + entry_idx * 32
+            entry = bytearray(32)
+            entry[0] = seq
+            entry[11] = 0x0F
+            entry[13] = checksum
+            # chars 1-5 @1, 6-11 @14, 12-13 @28
+            entry[1:11] = chunk[0:10]
+            entry[14:26] = chunk[10:22]
+            entry[28:32] = chunk[22:26]
+            img_data[eoff:eoff + 32] = entry
+            entry_idx += 1
+        return entry_idx
+
+    def add_to_directory(dir_offset, local_path, max_entries):
         nonlocal free_cluster
-        entries = os.listdir(local_path)
+        # Prefer small dirs / EFI first so assets fit early in the RAM disk window
+        entries = sorted(
+            os.listdir(local_path),
+            key=lambda n: (
+                0 if n.upper() == "EFI" else
+                1 if n.upper().startswith("PLANE") else
+                2 if n.upper() == "MAPS" else 3,
+                n.lower(),
+            ),
+        )
         entry_idx = 0
-        
+
         for name in entries:
             full_path = os.path.join(local_path, name)
             is_directory = os.path.isdir(full_path)
-            
-            # Format 8.3 name
             short_name = format_short_name(name, is_directory)
-            
             attr = 0x10 if is_directory else 0x00
             size = 0 if is_directory else os.path.getsize(full_path)
-            
-            # Allocate space
+
+            lfn_needed = 1 + (len(name.encode("utf-16-le")) + 2 + 25) // 26
+            if entry_idx + lfn_needed + 1 > max_entries:
+                print(f"WARNING: directory full, skipping {name}")
+                break
+
             if is_directory:
                 start_clus = free_cluster
                 free_cluster += 1
-                # Create empty directory space
                 write_fat_entry(start_clus, 0xFFFF)
-                # Recurse
                 dir_offset_child = data_offset + (start_clus - 2) * cluster_size
-                add_to_directory(dir_offset_child, full_path)
+                add_to_directory(dir_offset_child, full_path, cluster_size // 32)
             else:
                 with open(full_path, "rb") as f:
                     data = f.read()
                 start_clus = allocate_chain(len(data))
                 if start_clus > 0:
                     write_cluster_data(start_clus, data)
-            
-            # Write 32-byte directory entry
-            entry_offset = dir_offset + entry_idx * 32
-            try:
-                img_data[entry_offset : entry_offset + 11] = short_name
-                img_data[entry_offset + 11] = attr
-                img_data[entry_offset + 26 : entry_offset + 28] = struct.pack("<H", start_clus)
-                img_data[entry_offset + 28 : entry_offset + 32] = struct.pack("<I", size)
-            except IndexError:
-                print(f"CRASH: name={name}, is_dir={is_directory}, dir_offset={dir_offset}, entry_idx={entry_idx}, entry_offset={entry_offset}, len={len(img_data)}")
-                raise
-            
-            entry_idx += 1
-            if entry_idx >= 16: # limit directory entries per level for simplicity
-                break
 
-    # Start adding from root
-    add_to_directory(root_offset, src_dir)
-    
-    # Save image file
+            entry_idx = write_lfn_entries(dir_offset, entry_idx, name, short_name)
+            entry_offset = dir_offset + entry_idx * 32
+            img_data[entry_offset:entry_offset + 11] = short_name
+            img_data[entry_offset + 11] = attr
+            img_data[entry_offset + 26:entry_offset + 28] = struct.pack("<H", start_clus & 0xFFFF)
+            img_data[entry_offset + 20:entry_offset + 22] = struct.pack("<H", (start_clus >> 16) & 0xFFFF)
+            img_data[entry_offset + 28:entry_offset + 32] = struct.pack("<I", size)
+            entry_idx += 1
+
+    add_to_directory(root_offset, src_dir, root_dir_entries)
+
     with open(image_path, "wb") as f:
         f.write(img_data)
     print("FAT16 image generation complete!")
@@ -263,10 +291,13 @@ def make_bootable_iso(iso_path, efi_img_path):
     checksum = (-sum(words)) & 0xFFFF
     iso_data[bc_offset + 28 : bc_offset + 30] = struct.pack("<H", checksum)
     # Default Entry (points to efi_part.img)
-    # Sector count is in 512-byte units. If the image is too big for the 16-bit
-    # field, write 1: EDK2-based firmware (Hyper-V, OVMF) then maps the whole CD.
+    # Sector count is in 512-byte units. For a 256MB FAT image the 16-bit
+    # field cannot describe the whole volume. Write 1 so EDK2/OVMF maps the
+    # entire CD as BlockIo; the bootloader then reads FAT from ISO LBA 21.
     boot_sectors_512 = len(efi_data) // 512
     if boot_sectors_512 > 0xFFFF:
+        boot_sectors_512 = 1
+    if boot_sectors_512 < 1:
         boot_sectors_512 = 1
     iso_data[bc_offset + 32] = 0x88 # Bootable flag
     iso_data[bc_offset + 33] = 0x00 # Boot media type (0 = no emulation)

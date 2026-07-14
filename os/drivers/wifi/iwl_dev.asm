@@ -1,233 +1,207 @@
 ; ==============================================================================
-; x86-24scope OS - Intel AX211 WiFi Driver (Core & Dev Init)
+; x86-24scope OS - Intel iwlwifi Driver (multi-device AX/AC family)
+; Supports many PCI IDs via pci.asm table. Full firmware/DMA bring-up still
+; requires an on-disk firmware blob; until then we report status and fail
+; cleanly so netdev can fall back.
 ; ==============================================================================
 bits 64
 default rel
 
 section .text
 
-global wifi_init
-global wifi_send_packet
-global wifi_recv_packet
-global wifi_get_mac
+global iwl_driver_init
+global iwl_driver_send
+global iwl_driver_recv
+global iwl_driver_get_mac
 
-extern pci_get_wifi_device
 extern con_puts
+extern serial_puts
 extern con_put_hex
 extern con_newline
-extern serial_puts
 extern serial_put_hex
 extern sleep_ms
+extern wifi_load_firmware
+extern wifi_send_cmd
+extern fat32_open
+extern fat32_read
 
-; Mocks/Globals
-section .data
-align 8
-wifi_mac db 0x00, 0x72, 0xEE, 0x86, 0xBC, 0x53    ; Your laptop's MAC
-iwl_reg_base dq 0
-wifi_bus_dev_fn dd 0
-wifi_present db 0
-wifi_connected db 0
+; CSR offsets (iwlwifi)
+CSR_HW_IF_CONFIG_REG equ 0x000
+CSR_INT              equ 0x008
+CSR_INT_MASK         equ 0x00C
+CSR_FH_INT_STATUS    equ 0x010
+CSR_GPIO_IN          equ 0x018
+CSR_RESET            equ 0x020
+CSR_GP_CNTRL         equ 0x024
+CSR_HW_REV           equ 0x028
+CSR_EEPROM_REG       equ 0x02C
 
-msg_wifi_init db "WiFi: Initializing network subsystem...", 13, 10, 0
-msg_hw_init   db "WiFi: PCI device found. Resetting Intel AX211 hardware...", 13, 10, 0
-msg_fw_load   db "WiFi: Uploading iwlwifi AX211 firmware blob...", 13, 10, 0
-msg_fw_alive  db "WiFi: firmware ALIVE packet received. HW initialized.", 13, 10, 0
-msg_virt_init db "WiFi: HW missing. Initializing Loopback/Virtual network interface...", 13, 10, 0
+CSR_RESET_SW_RESET   equ 0x00000080
+CSR_GP_CNTRL_INIT_DONE equ 0x00000004
 
-section .text
-
-wifi_init:
+; RCX = BAR, EDX = BDF
+; RAX = 1 success, 0 fail (netdev falls back to loopback)
+iwl_driver_init:
     push rbp
     mov rbp, rsp
     push rbx
-    push rcx
-    push rdx
+    push rsi
+    push rdi
 
-    lea rcx, [msg_wifi_init]
+    mov [iwl_mmio], rcx
+    mov [iwl_bdf], edx
+
+    lea rcx, [msg_iwl_init]
     call con_puts
-    lea rcx, [msg_wifi_init]
+    lea rcx, [msg_iwl_init]
     call serial_puts
 
-    ; 1. Query PCI database for AX211
-    call pci_get_wifi_device
+    ; Metal / no-firmware path: do not poke hardware. Laptops often have
+    ; iwlwifi PCI devices that hang INIT_DONE without a firmware blob.
+    lea rcx, [msg_fw_try]
+    call con_puts
+    lea rcx, [msg_fw_try]
+    call serial_puts
+
+    lea rcx, [fw_path]
+    call fat32_open
     test rax, rax
-    jz .virtual_mode
+    jz .no_firmware
 
-    ; Real Hardware Found!
-    mov [iwl_reg_base], rax
-    mov [wifi_bus_dev_fn], ecx
-    mov byte [wifi_present], 1
+    mov rbx, [iwl_mmio]
+    test rbx, rbx
+    jz .fail
 
-    lea rcx, [msg_hw_init]
+    ; Read HW revision
+    mov eax, [rbx + CSR_HW_REV]
+    mov [iwl_hw_rev], eax
+    lea rcx, [msg_iwl_rev]
     call con_puts
-    lea rcx, [msg_hw_init]
+    lea rcx, [msg_iwl_rev]
+    call serial_puts
+    mov ecx, [iwl_hw_rev]
+    call con_put_hex
+    call con_newline
+    mov ecx, [iwl_hw_rev]
+    call serial_put_hex
+    lea rcx, [msg_nl]
     call serial_puts
 
-    ; Reset sequence (simulated/skeleton registers)
-    ; In real hardware: write CSR_RESET (0x20) = 0xFFFFFFFF
-    mov rbx, [iwl_reg_base]
-    mov dword [rbx + 0x20], 0xFFFFFFFF
+    ; Software reset
+    mov eax, [rbx + CSR_RESET]
+    or eax, CSR_RESET_SW_RESET
+    mov [rbx + CSR_RESET], eax
     mov rcx, 10
     call sleep_ms
 
-    ; Load firmware
-    lea rcx, [msg_fw_load]
-    call con_puts
-    lea rcx, [msg_fw_load]
-    call serial_puts
-    
-    ; Setup command/TX/RX rings
-    ; Setup interrupts (MSI-X)
-    
-    mov rcx, 50
-    call sleep_ms
+    ; Clear pending interrupts / mask all
+    mov dword [rbx + CSR_INT_MASK], 0
+    mov dword [rbx + CSR_INT], 0xFFFFFFFF
 
-    lea rcx, [msg_fw_alive]
-    call con_puts
-    lea rcx, [msg_fw_alive]
-    call serial_puts
+    ; Wait for INIT_DONE (mac clock ready) — may fail without power/firmware
+    mov eax, [rbx + CSR_GP_CNTRL]
+    or eax, CSR_GP_CNTRL_INIT_DONE
+    mov [rbx + CSR_GP_CNTRL], eax
 
-    mov byte [wifi_connected], 1
-    jmp .done
-
-.virtual_mode:
-    ; Fallback to Virtual Interface for VM/QEMU testing
-    mov byte [wifi_present], 0
-    
-    lea rcx, [msg_virt_init]
-    call con_puts
-    lea rcx, [msg_virt_init]
-    call serial_puts
-
-    ; Simulated connect delay
-    mov rcx, 20
-    call sleep_ms
-    
-    mov byte [wifi_connected], 1
-
-.done:
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rbp
-    ret
-
-; Get MAC Address
-; RCX = 6-byte output buffer
-wifi_get_mac:
-    push rsi
-    push rdi
+    mov ecx, 100
+.wait_init:
+    mov eax, [rbx + CSR_GP_CNTRL]
+    test eax, 0x00000001            ; MAC_CLOCK_READY-ish on some gens
+    jnz .clock_ok
     push rcx
-    
-    lea rsi, [wifi_mac]
-    mov rdi, rcx
-    mov rcx, 6
-    rep movsb
-    
+    mov rcx, 5
+    call sleep_ms
     pop rcx
-    pop rdi
-    pop rsi
-    ret
+    loop .wait_init
 
-; Send Ethernet/802.11 packet
-; RCX = Packet buffer pointer
-; RDX = Packet length
-wifi_send_packet:
-    push rbp
-    mov rbp, rsp
-    push rbx
-    push rsi
-    push rdi
+.clock_ok:
+    ; Attempt firmware load from FAT: \EFI\FIRMWARE\IWLWIFI.UC
+    lea rcx, [msg_fw_try]
+    call con_puts
+    lea rcx, [msg_fw_try]
+    call serial_puts
 
-    ; If virtual mode, loop packet back into RX queue if it is broadcast or destined for us
-    cmp byte [wifi_present], 0
-    jnz .hw_send
-
-    ; Virtual Loopback Mode
-    ; Check if broadcast (first 6 bytes = 0xFF) or matches our MAC
-    mov rsi, rcx
-    
-    ; Let's check destination MAC (first 6 bytes)
-    movzx eax, byte [rsi]
-    cmp al, 0xFF
-    jne .check_unicast
-    movzx eax, byte [rsi + 1]
-    cmp al, 0xFF
-    jne .check_unicast
-    jmp .loopback_packet
-
-.check_unicast:
-    ; Check if destination is our virtual IP/MAC.
-    ; For now, in loopback mode, we just pass all sent packets to the receive buffer
-    ; so that DHCP client can receive its own requests, ARP can resolve, etc.
-    ; This simulates a fully working loopback network!
-    jmp .loopback_packet
-
-.hw_send:
-    ; Real HW Send: enqueue on AX211 DMA Ring (TFD)
-    ; Write to TFD ring, increment write pointer
-    mov rbx, [iwl_reg_base]
-    ; In real hardware: write packet physical address into TFD ring, trigger door-bell
-    ; ...
-    jmp .done
-
-.loopback_packet:
-    ; Copy packet to loopback receive buffer
-    lea rdi, [loopback_buf]
-    mov [loopback_len], rdx
-    mov rcx, rdx
-    rep movsb
-    
-.done:
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
-
-; Receive packet
-; RCX = Destination buffer
-; Returns RAX = Received packet length (0 if no packet)
-wifi_recv_packet:
-    push rbp
-    mov rbp, rsp
-    push rsi
-    push rdi
-
-    cmp byte [wifi_present], 0
-    jnz .hw_recv
-
-    ; Virtual Mode: check loopback buffer
-    mov rax, [loopback_len]
+    lea rcx, [fw_path]
+    call fat32_open
     test rax, rax
-    jz .done
+    jz .no_firmware
 
-    ; Copy from loopback buffer to destination
-    mov rsi, rcx                    ; Save destination
-    lea rdi, [loopback_buf]
-    
-    ; Copy bytes
-    mov rcx, rax
-    mov rdi, rsi                    ; Destination
-    lea rsi, [loopback_buf]
-    rep movsb
+    ; File exists — call firmware loader stub (returns non-zero if OK)
+    call wifi_load_firmware
+    test rax, rax
+    jz .no_firmware
 
-    ; Clear loopback len
-    mov qword [loopback_len], 0
+    lea rcx, [msg_fw_ok]
+    call con_puts
+    lea rcx, [msg_fw_ok]
+    call serial_puts
+
+    mov byte [iwl_ready], 1
+    mov rax, 1
     jmp .done
 
-.hw_recv:
-    ; Real HW Recv: check AX211 RX DMA Ring (RBD)
-    ; ...
+.no_firmware:
+    lea rcx, [msg_fw_missing]
+    call con_puts
+    lea rcx, [msg_fw_missing]
+    call serial_puts
+    ; Hardware present but not usable without FW — fail so loopback takes over
+    ; (avoids claiming a broken NIC)
+    jmp .fail
+
+.fail:
+    mov byte [iwl_ready], 0
     xor rax, rax
 
 .done:
     pop rdi
     pop rsi
+    pop rbx
     pop rbp
     ret
 
-section .bss
-align 16
-loopback_buf resb 2048
-loopback_len resq 1
+iwl_driver_get_mac:
+    push rsi
+    push rdi
+    push rcx
+    lea rsi, [iwl_mac]
+    mov rdi, rcx
+    mov rcx, 6
+    rep movsb
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
+iwl_driver_send:
+    ; Without firmware/DMA rings, drop
+    cmp byte [iwl_ready], 0
+    jz .drop
+    ; Future: enqueue TFD
+.drop:
+    ret
+
+iwl_driver_recv:
+    xor rax, rax
+    cmp byte [iwl_ready], 0
+    jz .done
+    ; Future: poll RBD
+.done:
+    ret
+
+section .data
+align 8
+iwl_mmio dq 0
+iwl_bdf dd 0
+iwl_hw_rev dd 0
+iwl_ready db 0
+iwl_mac db 0x00, 0x72, 0xEE, 0x86, 0xBC, 0x53
+
+fw_path db "\EFI\FIRMWARE\IWLWIFI.UC", 0
+
+msg_iwl_init db "Net: Intel iwlwifi device found, bringing up...", 13, 10, 0
+msg_iwl_rev  db "Net: iwlwifi HW_REV = 0x", 0
+msg_fw_try   db "Net: Looking for firmware \EFI\FIRMWARE\IWLWIFI.UC ...", 13, 10, 0
+msg_fw_ok    db "Net: iwlwifi firmware loaded.", 13, 10, 0
+msg_fw_missing db "Net: iwlwifi firmware missing — WiFi HW idle (use e1000 in QEMU).", 13, 10, 0
+msg_nl db 13, 10, 0

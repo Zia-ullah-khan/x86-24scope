@@ -12,6 +12,7 @@ global eth_send_packet
 extern wifi_send_packet
 extern wifi_get_mac
 extern arp_handle_packet
+extern arp_cache_add
 extern ip_handle_packet
 extern con_puts
 extern serial_puts
@@ -63,7 +64,13 @@ net_handle_packet:
     jmp .done
 
 .handle_ip:
-    ; ip_handle_packet(rsi + 14, rdi - 14)
+    ; Learn Ethernet src MAC <-> IPv4 src for replies (avoids ARP race)
+    cmp rdi, 14+20
+    jb .ip_dispatch
+    lea rcx, [rsi + 6]              ; Eth src MAC
+    mov edx, [rsi + 14 + 12]        ; IP src (offset 12 in IPv4 header)
+    call arp_cache_add
+.ip_dispatch:
     lea rcx, [rsi + 14]
     mov rdx, rdi
     sub rdx, 14

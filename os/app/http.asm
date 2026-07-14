@@ -27,8 +27,8 @@ extern serial_puts
 extern sleep_ms
 
 ; HTTP constants
-header_len       equ 68
-http_ok_type_len equ 29
+header_len       equ 73
+http_ok_type_len equ 31
 http_len_tag_len equ 18
 footer_len       equ 23
 http_404_len     equ 93
@@ -96,7 +96,7 @@ http_server_start:
     mov [page_content], rax
     mov [page_length], rdx
 
-    ; Build response header
+    ; Build response header only (body sent separately)
     lea rdi, [response_buffer]
     lea rsi, [http_header]
     mov rcx, header_len
@@ -111,16 +111,17 @@ http_server_start:
     mov rcx, footer_len
     rep movsb
 
-    ; Write HTML page data
-    mov rsi, [page_content]
-    mov rcx, [page_length]
-    rep movsb
-
-    ; Send response
+    ; Send header
     mov rcx, [client_socket]
     lea rdx, [response_buffer]
     mov r8, rdi
-    sub r8, rdx                     ; r8 = total response length
+    sub r8, rdx
+    call os_send
+
+    ; Send HTML body
+    mov rcx, [client_socket]
+    mov rdx, [page_content]
+    mov r8, [page_length]
     call os_send
 
     jmp .close_client

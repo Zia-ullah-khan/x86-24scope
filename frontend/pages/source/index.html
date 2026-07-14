@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>24Scope</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #08111f;
+    --panel: rgba(15, 23, 42, 0.88);
+    --text: #e5eefc;
+    --muted: #8ea2c8;
+    --accent: #56d4ff;
+    --accent-2: #8b5cf6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    font-family: Arial, Helvetica, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(circle at top, rgba(86, 212, 255, 0.18), transparent 34%),
+      radial-gradient(circle at bottom right, rgba(139, 92, 246, 0.16), transparent 30%),
+      linear-gradient(135deg, #050914 0%, #0a1322 45%, #111c33 100%);
+    padding: 32px;
+  }
+  .card {
+    width: min(760px, 100%);
+    padding: 40px 36px;
+    border: 1px solid rgba(134, 166, 221, 0.22);
+    border-radius: 24px;
+    background: var(--panel);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(14px);
+  }
+  .eyebrow {
+    margin: 0 0 14px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(2.4rem, 6vw, 4.8rem);
+    line-height: 0.95;
+    letter-spacing: -0.05em;
+  }
+  .accent { color: var(--accent); }
+  .accent-2 { color: var(--accent-2); }
+  p {
+    margin: 18px 0 0;
+    max-width: 60ch;
+    color: var(--muted);
+    font-size: 1.05rem;
+    line-height: 1.7;
+  }
+  .tag {
+    display: inline-block;
+    margin-top: 26px;
+    padding: 10px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(86, 212, 255, 0.3);
+    background: rgba(86, 212, 255, 0.08);
+    color: #bfeeff;
+    font-size: 0.95rem;
+  }
+  .actions {
+    margin-top: 24px;
+  }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 24px;
+    padding: 12px 16px;
+    border-radius: 999px;
+    border: 1px solid rgba(86, 212, 255, 0.34);
+    background: linear-gradient(135deg, rgba(86, 212, 255, 0.18), rgba(139, 92, 246, 0.14));
+    color: var(--text);
+    text-decoration: none;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .button:hover {
+    border-color: rgba(86, 212, 255, 0.6);
+    box-shadow: 0 0 24px rgba(86, 212, 255, 0.18);
+  }
+</style>
+</head>
+<body>
+<main class="card">
+<p class="eyebrow">x86 assembly webapp</p>
+<h1>This will be an <span class="accent">x86 ASM</span> webapp.</h1>
+<h1>It will be a <span class="accent-2">duplicate of 24Spy</span>.</h1>
+<p>Low-level code, direct HTTP responses, and a custom frontend shell built entirely in assembly.</p>
+<div class="tag">Prototype interface in progress</div>
+<div class="actions"><a class="button" href="/radar">Open radar map</a></div>
+</main>
+</body>
+</html>

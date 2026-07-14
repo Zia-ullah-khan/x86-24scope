@@ -1,4 +1,3 @@
-# Python script to patch a GoLink-linked PE64 executable's Subsystem to 10 (EFI Application).
 import sys
 import struct
 

@@ -51,6 +51,7 @@ E1000_TDBAH    equ 0x3804
 E1000_TDLEN    equ 0x3808
 E1000_TDH      equ 0x3810
 E1000_TDT      equ 0x3818
+E1000_TIDV     equ 0x3820
 E1000_TXDCTL   equ 0x3828
 E1000_TARC0    equ 0x3840
 E1000_TXDCTL1  equ 0x3928
@@ -96,8 +97,13 @@ ICH_FWSM_PCIM2PCI    equ 0x01000000
 ICH_FWSM_PCIM2PCI_COUNT equ 2000
 KABGTXD_BGSQLBIAS    equ 0x00050000
 PCI_CAP_PTR          equ 0x34
+PCI_CAP_ID_PM        equ 0x01
 PCI_EXP_CAP_ID       equ 0x10
 PCI_EXP_DEVCTL_FLR   equ 0x8000
+PCI_EXP_LNKCTL_ASPMC equ 0x3          ; ASPM L0s|L1 in Link Control
+PCI_PM_CTRL          equ 0x4          ; offset within PM cap
+PCI_PM_CTRL_STATE_MASK equ 0x3
+PCI_PM_CTRL_STATE_D3HOT equ 0x3
 
 ; STATUS bits
 STATUS_LU            equ 0x2
@@ -235,15 +241,22 @@ e1000_driver_init:
     ; Read MAC before any reset (RAL cleared by RST on I219)
     call e1000_read_mac
 
-    ; I219: PCI FLR clears TX unit-hang that soft-reset cannot
-    call e1000_pci_flr
+    ; NOTE: PCI FLR skipped — I219 (PCH-integrated) freezes the platform.
     mov rbx, [e1000_mmio]
-    mov rcx, rbx
-    mov rdx, 0x200000
-    call vmm_map_mmio
+    call e1000_pci_set_master
+    call e1000_pci_disable_aspm
 
-    ; Drain any pre-FLR hang flag, then MAC soft-reset
-    call e1000_clear_i219_hang
+    ; QEMU needs MAC soft-reset. On I219, CTRL.RST after a hang often
+    ; leaves the TX DMA unit dead (TDH stuck at 0) — skip it on metal.
+    cmp word [e1000_device_id], 0x100E
+    je .do_soft_rst
+    cmp word [e1000_device_id], 0x100F
+    je .do_soft_rst
+    lea rcx, [msg_e1000_skiprst]
+    call con_puts
+    jmp .after_rst
+
+.do_soft_rst:
     call e1000_mmio_wait_me
     mov eax, [rbx + E1000_CTRL]
     or eax, CTRL_GIO_MASTER_DISABLE
@@ -255,8 +268,12 @@ e1000_driver_init:
     and eax, ~CTRL_GIO_MASTER_DISABLE
     or eax, CTRL_RST
     call e1000_ew32_ctrl
-    mov rcx, 50
+    ; Do NOT MMIO-read during reset window — hangs PCIe bus on I219
+    mov rcx, 100
     call sleep_ms
+    call e1000_pci_set_master
+
+.after_rst:
 
     ; ICH reset follow-up
     call e1000_mmio_wait_me
@@ -264,6 +281,16 @@ e1000_driver_init:
     or eax, KABGTXD_BGSQLBIAS
     mov ecx, E1000_KABGTXD
     call e1000_ew32
+
+    ; Claim NIC + program TARC/IOSFPC BEFORE hang-flush and PHY.
+    ; IFCS-only can advance TDH without TARC; EOP (real packets) needs it.
+    call e1000_take_ownership
+    call e1000_init_hw_bits
+
+    ; Flush TX hang only AFTER TARC is correct (then skip D3/D0 if TDH moves)
+    call e1000_i219_recover_tx
+    call e1000_pci_set_master
+    call e1000_pci_disable_aspm
 
     ; Re-program MAC into RAL after reset
     mov eax, dword [e1000_mac]
@@ -307,27 +334,20 @@ e1000_driver_init:
     test rax, rax
     jz .fail
 
-    ; Claim NIC from firmware/ME + unblock host RX path
-    call e1000_take_ownership
-    call e1000_init_hw_bits
-
-    ; TIPG + TCTL without EN yet (Linux starts TX after link-up)
+    ; Match the working flush programming order:
+    ;   rings already set by setup_tx → TXDCTL → TIPG → TCTL (EN later on link)
     mov eax, 0x00602008
     mov ecx, E1000_TIPG
+    call e1000_ew32
+    mov eax, TXDCTL_FULL_WB | TXDCTL_BIT22
+    mov ecx, E1000_TXDCTL
+    call e1000_ew32
+    mov ecx, E1000_TXDCTL1
     call e1000_ew32
     mov eax, TCTL_PSP | TCTL_RTLC
     or eax, (15 << TCTL_CT_SHIFT)
     or eax, (63 << TCTL_COLD_SHIFT)
     mov ecx, E1000_TCTL
-    call e1000_ew32
-
-    ; TXDCTL writeback/prefetch policy
-    mov eax, TXDCTL_FULL_WB
-    or eax, TXDCTL_MAX_PREFETCH
-    or eax, TXDCTL_BIT22
-    mov ecx, E1000_TXDCTL
-    call e1000_ew32
-    mov ecx, E1000_TXDCTL1
     call e1000_ew32
 
     ; Enable RX only for now
@@ -337,13 +357,6 @@ e1000_driver_init:
     mov eax, NUM_RX_DESC - 1
     mov ecx, E1000_RDT
     call e1000_ew32
-
-    lea rcx, [msg_e1000_txdctl]
-    call con_puts
-    mov eax, [rbx + E1000_TXDCTL]
-    mov rcx, rax
-    call con_put_hex
-    call con_newline
 
     ; Print MAC so we can verify UEFI/RAL vs synthetic
     lea rcx, [msg_e1000_mac]
@@ -419,10 +432,69 @@ e1000_driver_init:
     and eax, ~(1 << 21)
     mov [rbx + E1000_TARC0], eax
 .tarc_ok:
+    ; Same order as working flush: reset heads → TIPG → TXDCTL → TCTL.EN → doorbell
     call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_TCTL]
+    and eax, ~TCTL_EN
+    mov [rbx + E1000_TCTL], eax
+    mov dword [rbx + E1000_TDH], 0
+    mov dword [rbx + E1000_TDT], 0
+    mov dword [tx_cur], 0
+    mov dword [rbx + E1000_TIDV], 0
+    mov dword [rbx + E1000_TIPG], 0x00602008
+    mov eax, TXDCTL_FULL_WB | TXDCTL_BIT22
+    mov [rbx + E1000_TXDCTL], eax
+    mov [rbx + E1000_TXDCTL1], eax
     mov eax, [rbx + E1000_TCTL]
     or eax, TCTL_EN
     mov [rbx + E1000_TCTL], eax
+    mov eax, [rbx + E1000_STATUS]
+    sfence
+
+    ; Smoke-test TX on the real ring before DHCP
+    call e1000_tx_probe
+    lea rcx, [msg_e1000_probe]
+    call con_puts
+    movzx ecx, word [e1000_probe_tdh]
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_tarc]
+    call con_puts
+    mov eax, [rbx + E1000_TARC0]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+
+    lea rcx, [msg_e1000_txdctl]
+    call con_puts
+    mov eax, [rbx + E1000_TXDCTL]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_tctl_diag]
+    call con_puts
+    mov eax, [rbx + E1000_TCTL]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+
+    ; Reprint recover results here (early messages scroll off under DHCP spam)
+    lea rcx, [msg_e1000_recap]
+    call con_puts
+    movzx ecx, word [e1000_flush_tdh]
+    call con_put_hex
+    lea rcx, [msg_slash]
+    call con_puts
+    mov eax, [e1000_hang_stat]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_tdbal]
+    call con_puts
+    mov rax, [tx_ring_phys]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
 
     lea rcx, [msg_e1000_ok]
     call con_puts
@@ -494,10 +566,15 @@ e1000_take_ownership:
 e1000_init_hw_bits:
     push rax
 
+    ; SPT/KBL Si errata: limit outstanding TX DMA requests (avoids hangs)
+    mov eax, [rbx + E1000_IOSFPC]
+    or eax, 1
+    mov [rbx + E1000_IOSFPC], eax
+
     mov eax, [rbx + E1000_TARC0]
     or eax, (1 << 0) | (1 << 21) | (1 << 23) | (1 << 24) | (1 << 26) | (1 << 27)
     and eax, ~TARC0_MULTIQ_3
-    or eax, TARC0_MULTIQ_2
+    or eax, TARC0_MULTIQ_2            ; clear bit28, set bit29
     mov [rbx + E1000_TARC0], eax
 
     mov eax, [rbx + E1000_TARC1]
@@ -546,6 +623,43 @@ e1000_ew32_ctrl:
     mov ecx, E1000_CTRL
     call e1000_ew32
     pop rcx
+    ret
+
+; Re-enable PCI Memory Space + Bus Master for e1000_bdf (preserves all regs except rax)
+e1000_pci_set_master:
+    push rbx
+    push rcx
+    push rdx
+    push r8
+    push r9
+
+    mov eax, [e1000_bdf]
+    movzx r8d, al                   ; function
+    mov ecx, eax
+    shr ecx, 8
+    movzx edx, cl                   ; device
+    shr eax, 16
+    movzx ecx, al                   ; bus
+    mov r9, 0x04
+    push rcx
+    push rdx
+    push r8
+    call pci_read_config
+    pop r8
+    pop rdx
+    pop rcx
+    or eax, 0x06                    ; Memory Space | Bus Master
+    mov r9, 0x04
+    push rax
+    sub rsp, 32
+    call pci_write_config
+    add rsp, 40
+
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    pop rbx
     ret
 
 ; PCI Function Level Reset — only reliable way to clear I219 TX unit hang
@@ -666,8 +780,169 @@ e1000_pci_flr:
     pop rax
     ret
 
-; If UEFI left I219 in descriptor-ring hang, attempt a dummy TX drain
-e1000_clear_i219_hang:
+; Unpack e1000_bdf → RCX=bus, RDX=dev, R8=func
+e1000_unpack_bdf:
+    mov eax, [e1000_bdf]
+    movzx r8d, al
+    mov ecx, eax
+    shr ecx, 8
+    movzx edx, cl
+    shr eax, 16
+    movzx ecx, al
+    ret
+
+; Find PCI capability ID in AL. Returns R9=cap offset, CF=1 if missing.
+e1000_pci_find_cap:
+    push rax
+    push rbx
+    mov bl, al                      ; wanted ID
+    call e1000_unpack_bdf
+    mov r9, PCI_CAP_PTR
+    push rcx
+    push rdx
+    push r8
+    call pci_read_config
+    pop r8
+    pop rdx
+    pop rcx
+    movzx eax, al
+.walk:
+    and eax, 0xFC
+    jz .miss
+    mov r9, rax
+    push rax
+    push rcx
+    push rdx
+    push r8
+    call pci_read_config
+    pop r8
+    pop rdx
+    pop rcx
+    pop r9
+    cmp al, bl
+    je .hit
+    movzx eax, ah
+    jmp .walk
+.hit:
+    pop rbx
+    pop rax
+    clc
+    ret
+.miss:
+    pop rbx
+    pop rax
+    stc
+    ret
+
+; Disable ASPM on I219 — known to stall TX DMA on some PCH parts
+e1000_pci_disable_aspm:
+    push rax
+    push rcx
+    push rdx
+    push r8
+    push r9
+    mov al, PCI_EXP_CAP_ID
+    call e1000_pci_find_cap
+    jc .done
+    ; Link Control is at PCIe cap + 0x10
+    lea r9, [r9 + 0x10]
+    and r9, 0xFC
+    call e1000_unpack_bdf
+    push rcx
+    push rdx
+    push r8
+    push r9
+    call pci_read_config
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    and eax, ~PCI_EXP_LNKCTL_ASPMC
+    push rax
+    sub rsp, 32
+    call pci_write_config
+    add rsp, 40
+.done:
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    pop rax
+    ret
+
+; PCI D3hot → D0 power cycle (FLR alternative to clear I219 TX hang)
+e1000_pci_pm_cycle:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push r8
+    push r9
+
+    lea rcx, [msg_e1000_pm]
+    call con_puts
+
+    mov al, PCI_CAP_ID_PM
+    call e1000_pci_find_cap
+    jc .done
+
+    lea ebx, [r9d + PCI_PM_CTRL]
+    and ebx, 0xFC                   ; EBX = PMCSR offset (stable across calls)
+
+    call e1000_unpack_bdf
+    mov r9d, ebx
+    push rcx
+    push rdx
+    push r8
+    push r9
+    call pci_read_config
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+
+    and eax, ~PCI_PM_CTRL_STATE_MASK
+    or eax, PCI_PM_CTRL_STATE_D3HOT
+    mov r9d, ebx
+    push rax
+    sub rsp, 32
+    call pci_write_config
+    add rsp, 40
+    mov rcx, 50
+    call sleep_ms
+
+    call e1000_unpack_bdf
+    mov r9d, ebx
+    push rcx
+    push rdx
+    push r8
+    push r9
+    call pci_read_config
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    and eax, ~PCI_PM_CTRL_STATE_MASK
+    mov r9d, ebx
+    push rax
+    sub rsp, 32
+    call pci_write_config
+    add rsp, 40
+    mov rcx, 20
+    call sleep_ms
+
+.done:
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+; Always flush TX ring on I219, then D3/D0 + ASPM off (before CTRL.RST)
+; RBX = mmio
+e1000_i219_recover_tx:
     push rax
     push rcx
     push rdx
@@ -681,43 +956,51 @@ e1000_clear_i219_hang:
     cmp word [e1000_device_id], 0x100F
     je .done
 
+    lea rcx, [msg_e1000_hang]
+    call con_puts
+
     call e1000_mmio_wait_me
     mov eax, [rbx + E1000_FEXTNVM11]
     or eax, FEXTNVM11_DISABLE_MULR
     mov [rbx + E1000_FEXTNVM11], eax
 
-    mov eax, [e1000_bdf]
-    movzx r8d, al
-    mov ecx, eax
-    shr ecx, 8
-    movzx edx, cl
-    shr eax, 16
-    movzx ecx, al
+    ; Print hang flag for diagnostics
+    call e1000_unpack_bdf
     mov r9, PCICFG_DESC_RING_STATUS
     call pci_read_config
-    test eax, FLUSH_DESC_REQUIRED
-    jz .done
-
-    lea rcx, [msg_e1000_hang]
+    mov [e1000_hang_stat], eax
+    lea rcx, [msg_e1000_hangstat]
     call con_puts
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
 
-    ; Allocate a throwaway ring page and force one TX to unwedge
+    mov word [e1000_flush_tdh], 0
+
+    ; --- Always force a dummy TX drain (Linux flush_tx_ring) ---
     call pmm_alloc_page
     test rax, rax
-    jz .done
+    jz .force_pm
     mov rsi, rax
     mov rdi, rax
     mov rcx, 4096 / 8
     xor rax, rax
     rep stosq
 
-    ; Descriptor 0: buffer = ring itself, len=512, CMD=IFCS
     mov rax, rsi
     mov [rsi], rax
+    ; lower.data = length | (CMD << 24); CMD = IFCS only for flush (Linux)
     mov dword [rsi + 8], 512 | (0x02 << 24)
     mov dword [rsi + 12], 0
+    clflush [rsi]
+    clflush [rsi + 15]
+    sfence
 
     call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_TCTL]
+    and eax, ~TCTL_EN
+    mov [rbx + E1000_TCTL], eax
+
     mov rax, rsi
     mov [rbx + E1000_TDBAL], eax
     shr rax, 32
@@ -725,18 +1008,67 @@ e1000_clear_i219_hang:
     mov dword [rbx + E1000_TDLEN], 128
     mov dword [rbx + E1000_TDH], 0
     mov dword [rbx + E1000_TDT], 0
-    mov eax, [rbx + E1000_TCTL]
+    mov dword [rbx + E1000_TIPG], 0x00602008
+    mov eax, TXDCTL_FULL_WB | TXDCTL_BIT22
+    mov [rbx + E1000_TXDCTL], eax
+    mov eax, TCTL_PSP | TCTL_RTLC
+    or eax, (15 << TCTL_CT_SHIFT)
+    or eax, (63 << TCTL_COLD_SHIFT)
     or eax, TCTL_EN
     mov [rbx + E1000_TCTL], eax
     sfence
     call e1000_mmio_wait_me
     mov dword [rbx + E1000_TDT], 1
-    mov rcx, 1
+
+    mov ecx, 50
+.wait_flush:
+    mov eax, [rbx + E1000_TDH]
+    test eax, eax
+    jnz .flush_ok
+    push rcx
+    mov rcx, 2
     call sleep_ms
+    pop rcx
+    loop .wait_flush
+.flush_ok:
+    mov eax, [rbx + E1000_TDH]
+    mov [e1000_flush_tdh], ax
+    lea rcx, [msg_e1000_flush_diag]
+    call con_puts
+    movzx ecx, word [e1000_flush_tdh]
+    call con_put_hex
+    lea rcx, [msg_slash]
+    call con_puts
+    movzx eax, byte [rsi + 12]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+
     call e1000_mmio_wait_me
     mov eax, [rbx + E1000_TCTL]
     and eax, ~TCTL_EN
     mov [rbx + E1000_TCTL], eax
+    ; Leave TDLEN installed; setup_tx reprograms the real ring next.
+
+    call e1000_pci_disable_aspm
+
+    ; Flush TDH advanced → TX DMA is alive. D3/D0 was killing it again.
+    cmp word [e1000_flush_tdh], 0
+    jne .skip_pm
+
+.force_pm:
+    lea rcx, [msg_e1000_pm_need]
+    call con_puts
+    call e1000_pci_disable_aspm
+    call e1000_pci_pm_cycle
+    call e1000_pci_set_master
+    mov rbx, [e1000_mmio]
+    jmp .done
+
+.skip_pm:
+    lea rcx, [msg_e1000_pm_skip]
+    call con_puts
+    call e1000_pci_set_master
 
 .done:
     pop rdi
@@ -1117,6 +1449,11 @@ e1000_setup_tx:
     mov [tx_buf_phys], rax
 
     mov rbx, [e1000_mmio]
+    call e1000_mmio_wait_me
+    mov eax, [rbx + E1000_TCTL]
+    and eax, ~TCTL_EN
+    mov [rbx + E1000_TCTL], eax
+
     mov rax, [tx_ring_phys]
     mov [rbx + E1000_TDBAL], eax
     shr rax, 32
@@ -1133,6 +1470,66 @@ e1000_setup_tx:
 .done:
     pop rdi
     pop rbx
+    ret
+
+; Queue one complete dummy TX on the live ring (after TCTL.EN).
+; Do NOT set RS — on this ME-managed I219, status writeback appears to stall
+; the TX DMA unit (IFCS-only advanced TDH; EOP|IFCS|RS left TDH at 0).
+; Completion is TDH advancing. Stores TDH in e1000_probe_tdh.
+e1000_tx_probe:
+    push rax
+    push rbx
+    push rcx
+    push rdi
+    push rsi
+
+    mov word [e1000_probe_tdh], 0
+    mov rbx, [e1000_mmio]
+    mov rsi, [tx_buf_phys]
+    test rsi, rsi
+    jz .done
+    mov rdi, rsi
+    mov rcx, 512 / 8
+    xor rax, rax
+    rep stosq
+    clflush [rsi]
+    clflush [rsi + 511]
+
+    mov rsi, [tx_ring_phys]
+    mov rdi, rsi                    ; desc 0
+    mov rax, [tx_buf_phys]
+    mov [rdi], rax
+    ; length | (CMD << 24); CMD = EOP|IFCS (close packet, no RS)
+    mov dword [rdi + 8], 512 | (0x03 << 24)
+    mov dword [rdi + 12], 0
+    clflush [rdi]
+    clflush [rdi + 15]
+    sfence
+
+    call e1000_mmio_wait_me
+    mov dword [rbx + E1000_TDT], 1
+    mov dword [tx_cur], 1
+
+    mov ecx, 50
+.wait_probe:
+    mov eax, [rbx + E1000_TDH]
+    test eax, eax
+    jnz .probe_ok
+    push rcx
+    mov rcx, 2
+    call sleep_ms
+    pop rcx
+    loop .wait_probe
+.probe_ok:
+    mov eax, [rbx + E1000_TDH]
+    mov [e1000_probe_tdh], ax
+
+.done:
+    pop rsi
+    pop rdi
+    pop rcx
+    pop rbx
+    pop rax
     ret
 
 ; RAX = 1 if this is QEMU's 82540EM (0x100E) — safe for fake 10.0.2.15 fallback
@@ -1187,12 +1584,23 @@ e1000_driver_send:
 
     mov rax, [tx_buf_phys]
     mov [rdi], rax                  ; buffer address
-    mov word [rdi + 8], r12w
-    mov byte [rdi + 10], 0
-    mov byte [rdi + 11], 0x0B       ; EOP|IFCS|RS
+    ; EOP|IFCS — no RS (I219 ME path stalls TX DMA on status writeback)
+    mov eax, r12d
+    and eax, 0xFFFF
+    or eax, (0x03 << 24)
+    mov [rdi + 8], eax
     mov dword [rdi + 12], 0
 
-    ; Ensure descriptor stores are visible before ringing the doorbell
+    ; Force descriptor + packet out of CPU caches (DMA may not snoop WB on some PCH)
+    clflush [rdi]
+    clflush [rdi + 15]
+    mov rax, [tx_buf_phys]
+    clflush [rax]
+    test r12, r12
+    jz .flushed
+    lea rax, [rax + r12 - 1]
+    clflush [rax]
+.flushed:
     sfence
     call e1000_mmio_wait_me
 
@@ -1213,16 +1621,18 @@ e1000_driver_send:
     call con_puts
 .tdt_ok:
 
-    ; Wait briefly for DD (descriptor done) so we know DMA ran
+    ; Wait for TDH to catch TDT (no RS/DD — see probe comment)
     mov ecx, 100
-.wait_tx_dd:
-    test byte [rdi + 12], 0x01
-    jnz .tx_ok
+.wait_tx_tdh:
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_TDH]
+    cmp eax, ebx
+    je .tx_ok
     push rcx
     mov rcx, 1
     call sleep_ms
     pop rcx
-    loop .wait_tx_dd
+    loop .wait_tx_tdh
     lea rcx, [msg_e1000_txfail]
     call con_puts
     lea rcx, [msg_e1000_tdh]
@@ -1235,6 +1645,27 @@ e1000_driver_send:
     call con_puts
     mov rax, [e1000_mmio]
     mov eax, [rax + E1000_TDT]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_tctl_diag]
+    call con_puts
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_TCTL]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_txdctl]
+    call con_puts
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_TXDCTL]
+    mov rcx, rax
+    call con_put_hex
+    call con_newline
+    lea rcx, [msg_e1000_fwsm]
+    call con_puts
+    mov rax, [e1000_mmio]
+    mov eax, [rax + E1000_FWSM]
     mov rcx, rax
     call con_put_hex
     call con_newline
@@ -1330,6 +1761,9 @@ e1000_bdf dd 0
 e1000_pci_id dd 0
 e1000_device_id dw 0
 e1000_have_link db 0
+e1000_flush_tdh dw 0
+e1000_probe_tdh dw 0
+e1000_hang_stat dd 0
 e1000_mac db 0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0, 0
 rx_ring_phys dq 0
 tx_ring_phys dq 0
@@ -1344,7 +1778,16 @@ msg_e1000_mac db "Net: e1000 MAC ", 0
 msg_colon db ":", 0
 msg_e1000_txdctl db "Net: e1000 TXDCTL=0x", 0
 msg_e1000_flr db "Net: e1000 issuing PCI function-level reset...", 13, 10, 0
-msg_e1000_hang db "Net: e1000 I219 descriptor hang flagged — flushing.", 13, 10, 0
+msg_e1000_hang db "Net: e1000 I219 TX recover (flush; D3/D0 only if needed)...", 13, 10, 0
+msg_e1000_hangstat db "Net: e1000 PCI hang status=0x", 0
+msg_e1000_pm db "Net: e1000 PCI D3hot->D0 power cycle...", 13, 10, 0
+msg_e1000_pm_need db "Net: e1000 flush did not advance TDH — trying D3/D0...", 13, 10, 0
+msg_e1000_pm_skip db "Net: e1000 flush advanced TDH — skipping D3/D0 (keeps TX alive).", 13, 10, 0
+msg_e1000_probe db "Net: e1000 TX probe TDH=0x", 0
+msg_e1000_tarc db "Net: e1000 TARC0=0x", 0
+msg_e1000_skiprst db "Net: e1000 skipping CTRL.RST on I219 (avoids TX hang).", 13, 10, 0
+msg_e1000_recap db "Net: e1000 recover flush_tdh/hang=0x", 0
+msg_e1000_tdbal db "Net: e1000 TDBAL(ring)=0x", 0
 msg_e1000_tdtbad db "Net: e1000 TDT write ignored (ME arbiter?).", 13, 10, 0
 msg_e1000_ok   db "Net: e1000 link ready.", 13, 10, 0
 msg_e1000_nolink db "Net: e1000 init OK but no cable link yet.", 13, 10, 0
@@ -1353,6 +1796,9 @@ msg_e1000_phyra db "Net: e1000 PHYRA still set (ME may own PHY).", 13, 10, 0
 msg_e1000_gptc db "Net: e1000 GPTC (tx good)=0x", 0
 msg_e1000_gprc db "Net: e1000 GPRC (rx good)=0x", 0
 msg_e1000_txfail db "Net: e1000 TX descriptor timeout (queue not running?).", 13, 10, 0
+msg_e1000_tctl_diag db "Net: e1000 TCTL=0x", 0
+msg_e1000_fwsm db "Net: e1000 FWSM=0x", 0
+msg_e1000_flush_diag db "Net: e1000 flush TDH/DD=0x", 0
 msg_e1000_tdh db "Net: e1000 TDH/TDT=0x", 0
 msg_slash db "/", 0
 msg_e1000_fail db "Net: e1000 init FAILED.", 13, 10, 0
